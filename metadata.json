@@ -1,0 +1,9 @@
+{
+  "name": "AmbuFlow",
+  "description": "Système de pointage et de gestion de planning mobile-first pour les services d'ambulance, avec assistant intelligent Gemini.",
+  "requestFramePermissions": [
+    "geolocation",
+    "publickey-credentials-create",
+    "publickey-credentials-get"
+  ]
+}
