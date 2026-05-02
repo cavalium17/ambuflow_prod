@@ -2,7 +2,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ActivityLog } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // @fix: Refactored to use systemInstruction and Type-based responseSchema for robust payroll estimation
 export async function getPayrollEstimation(logs: ActivityLog[]) {
@@ -12,7 +12,7 @@ export async function getPayrollEstimation(logs: ActivityLog[]) {
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', // Complex reasoning task
+      model: 'gemini-3.1-pro-preview', // Updated to 3.1 pro for complex reasoning
       contents: prompt,
       config: {
         systemInstruction: "Vous êtes un expert en gestion de paie pour ambulances de transport sanitaire (convention collective 3085). Tâches : 1. Calcule une estimation des heures travaillées aujourd'hui. 2. Identifie les primes potentielles (Panier repas, prime de nuit). 3. Donne un message court sur l'état de la rémunération variable. Répondez au format JSON.",

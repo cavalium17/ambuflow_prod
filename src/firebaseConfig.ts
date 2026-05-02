@@ -8,35 +8,59 @@ import {
 import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
+import firebaseConfigData from '../firebase-applet-config.json';
 
-// REMPLACEMENT : On utilise les variables du .env à la place du fichier JSON
-const firebaseConfigData = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
+// Use the configuration directly from the generated file. 
+// Only override if the environment variables are explicitly provided AND valid.
+const getEnv = (key: string) => {
+  const val = (import.meta as any).env?.[key];
+  if (typeof val !== 'string' || val.length === 0) return undefined;
+  
+  // Basic validation to prevent overriding with garbage or placeholders
+  if (key.includes('API_KEY') && !val.startsWith('AIza')) return undefined;
+  if (key.includes('PROJECT_ID') && val.includes(' ')) return undefined;
+  
+  return val;
 };
 
-const app = initializeApp(firebaseConfigData);
+const finalConfig = {
+  ...firebaseConfigData,
+  apiKey: getEnv('VITE_FIREBASE_API_KEY') || firebaseConfigData.apiKey,
+  projectId: getEnv('VITE_FIREBASE_PROJECT_ID') || firebaseConfigData.projectId,
+  appId: getEnv('VITE_FIREBASE_APP_ID') || firebaseConfigData.appId,
+  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN') || firebaseConfigData.authDomain,
+  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET') || firebaseConfigData.storageBucket,
+  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID') || firebaseConfigData.messagingSenderId,
+};
 
-// Le reste de ton code (Auth, Firestore, Messaging) reste identique...
+// Guard: Ensure API key is present and looks like a Firebase key
+if (!finalConfig.apiKey || !finalConfig.apiKey.startsWith('AIza')) {
+  console.error("❌ CRITICAL: Invalid or missing Firebase API Key detected in finalConfig!", { 
+    hasKey: !!finalConfig.apiKey, 
+    keyPrefix: finalConfig.apiKey?.substring(0, 4) 
+  });
+} else {
+  console.log("Firebase Config loaded successfully:", {
+    projectId: finalConfig.projectId,
+    apiKey: finalConfig.apiKey.substring(0, 6) + "...",
+    authDomain: finalConfig.authDomain
+  });
+}
+
+const app = initializeApp(finalConfig);
+
+// Initialize Auth with explicit local persistence and popup resolver for better iframe compatibility
 export const auth = initializeAuth(app, {
   persistence: browserLocalPersistence,
   popupRedirectResolver: browserPopupRedirectResolver,
 });
 
 export const googleProvider = new GoogleAuthProvider();
-// Force popup mode for better compatibility in AI Studio preview
-googleProvider.setCustomParameters({
-  prompt: 'select_account'
-});
 
-// Forced Long Polling to avoid WebSocket issues in sandboxed/firewalled environments
+// Forced Long Polling to avoid WebSocket issues in sandboxed environments
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
-}, firebaseConfigData.firestoreDatabaseId);
+});
 
 async function testConnection() {
   try {

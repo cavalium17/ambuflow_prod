@@ -16,7 +16,7 @@ const firebaseConfigPath = path.join(__dirname, 'firebase-applet-config.json');
 const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
 
 // ID de la base de données spécifique (priorité au config file si présent)
-const CUSTOM_DATABASE_ID = firebaseConfig.firestoreDatabaseId || 'ai-studio-bc6dd8d0-4580-4097-892c-7d8a2e1c3e27';
+const CUSTOM_DATABASE_ID = firebaseConfig.firestoreDatabaseId || '';
 
 // Initialize Firebase Admin (Default App)
 let adminApp;

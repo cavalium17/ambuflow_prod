@@ -1,7 +1,7 @@
 import admin from 'firebase-admin';
 
 // ID de votre base de données spécifique
-const DATABASE_ID = 'ai-studio-bc6dd8d0-4580-4097-892c-7d8a2e1c3e27';
+const DATABASE_ID = ''; 
 
 // 1. Initialisation de Firebase Admin
 if (!admin.apps.length) {

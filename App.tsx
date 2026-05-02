@@ -53,6 +53,8 @@ import {
   Check
 } from 'lucide-react';
 import { ServiceStatus, ActivityLog, AppTab, Shift, Break, UserStats, UserRole, UserProfile, PushNotification as PushType } from './types';
+import { getLocalDateString, getFrenchPublicHolidays, isSundayOrHoliday, calculateTotalDurationMinutes } from './src/lib/dateUtils';
+import Logo from './components/Logo';
 import PlanningTab from './components/PlanningTab';
 import PaieTab from './components/PaieTab';
 import ProfileTab from './components/ProfileTab';
@@ -67,57 +69,7 @@ import { onAuthStateChanged, User as FirebaseUser, signOut, deleteUser } from 'f
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, writeBatch } from 'firebase/firestore';
 import { requestNotificationPermissions, requestLocationPermissions, setupNotificationChannels } from './services/notificationManager';
 import { requestForToken, onMessageListener } from './src/firebaseConfig';
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
+import { handleFirestoreError, OperationType } from './src/services/firestoreErrorHandler';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -182,49 +134,6 @@ class ErrorBoundary extends Component<any, any> {
 const BREAK_MIN_DURATION = 20 * 60; // 20 minutes en secondes
 const MEAL_MIN_DURATION = 30 * 60; // 30 minutes en secondes
 const MAX_BREAK_DURATION = 90 * 60; // 1h30 en secondes
-const getFrenchPublicHolidays = (year: number) => {
-  const holidays = [
-    `${year}-01-01`, // Nouvel An
-    `${year}-05-01`, // Fête du Travail
-    `${year}-05-08`, // Victoire 1945
-    `${year}-07-14`, // Fête Nationale
-    `${year}-08-15`, // Assomption
-    `${year}-11-01`, // Toussaint
-    `${year}-11-11`, // Armistice
-    `${year}-12-25`, // Noël
-  ];
-
-  // Calcul des jours mobiles (Pâques, Ascension, Pentecôte)
-  const a = year % 19, b = Math.floor(year / 100), c = year % 100,
-        d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25),
-        g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30,
-        i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7,
-        m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const n = h + l - 7 * m + 114;
-  const month = Math.floor(n / 31);
-  const day = (n % 31) + 1;
-
-  const easter = new Date(year, month - 1, day);
-  const addDays = (date: Date, days: number) => {
-    const d = new Date(date);
-    d.setDate(d.getDate() + days);
-    return d.toISOString().split('T')[0];
-  };
-
-  holidays.push(addDays(easter, 1)); // Lundi de Pâques
-  holidays.push(addDays(easter, 39)); // Ascension
-  holidays.push(addDays(easter, 50)); // Lundi de Pentecôte
-
-  return holidays;
-};
-
-const isSundayOrHoliday = (dateStr: string) => {
-  const date = new Date(dateStr);
-  if (date.getDay() === 0) return true; // Dimanche
-  const year = date.getFullYear();
-  const holidays = getFrenchPublicHolidays(year);
-  return holidays.includes(dateStr);
-};
 
 const sanitizeData = (data: any): any => {
   if (Array.isArray(data)) {
@@ -276,13 +185,6 @@ const App: React.FC = () => {
   const [lastFinishedShift, setLastFinishedShift] = useState<Shift | null>(null);
   const [showNotificationPanel, setShowNotificationPanel] = useState(false);
   
-  const getLocalDateString = useCallback((date: Date) => {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }, []);
-
   // Use a ref to track the last reset day to avoid unnecessary processing
   const lastResetDayRef = useRef(getLocalDateString(new Date()));
 
@@ -1370,43 +1272,67 @@ const App: React.FC = () => {
     }
   }, [user, setIsGuest]);
 
+  const [showReauthModal, setShowReauthModal] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const handleHardDelete = useCallback(async () => {
     if (!user || user.uid === 'local_user') {
       await handleResetData();
       return;
     }
 
+    setDeleteError(null);
     isResettingRef.current = true;
+    console.log("Starting hard delete for user:", user.uid);
+    
     try {
       const uid = user.uid;
 
       // 1. Delete Firestore Data (Cascade)
-      await deleteDoc(doc(db, 'users', uid));
-      
-      const shiftsQuery = query(collection(db, 'shifts'), where('userId', '==', uid));
-      const shiftsSnapshot = await getDocs(shiftsQuery);
-      const batch = writeBatch(db);
-      shiftsSnapshot.docs.forEach((doc) => {
-        batch.delete(doc.ref);
-      });
-      await batch.commit();
+      // We use a timeout to avoid hanging forever if Firestore is unreachable
+      const deleteData = async () => {
+        console.log("Deleting user document...");
+        await deleteDoc(doc(db, 'users', uid));
+        
+        console.log("Querying shifts...");
+        const shiftsQuery = query(collection(db, 'shifts'), where('userId', '==', uid));
+        const shiftsSnapshot = await getDocs(shiftsQuery);
+        
+        if (!shiftsSnapshot.empty) {
+          console.log(`Deleting ${shiftsSnapshot.size} shifts...`);
+          const batch = writeBatch(db);
+          shiftsSnapshot.docs.forEach((doc) => {
+            batch.delete(doc.ref);
+          });
+          await batch.commit();
+        }
+      };
+
+      try {
+        await Promise.race([
+          deleteData(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout Firestore (30s)")), 30000))
+        ]);
+      } catch (firestoreError: any) {
+        console.error("Firestore cleanup failed or timed out:", firestoreError);
+        // We continue anyway to try and delete the auth user
+      }
 
       // 2. Delete Firebase Auth User
+      console.log("Deleting Auth user...");
       try {
         await deleteUser(user);
       } catch (authError: any) {
+        console.error("Auth delete failed:", authError.code, authError.message);
         if (authError.code === 'auth/requires-recent-login') {
-          alert("Pour des raisons de sécurité, vous devez vous reconnecter avant de supprimer définitivement votre compte.");
-          await signOut(auth);
-          localStorage.clear();
-          sessionStorage.clear();
-          window.location.href = '/';
+          setShowReauthModal(true);
           return;
         }
         throw authError;
       }
 
       // 3. Cleanup Client State
+      console.log("Cleanup local state...");
       localStorage.clear();
       sessionStorage.clear();
       setIsGuest(false);
@@ -1416,11 +1342,11 @@ const App: React.FC = () => {
       
       setTimeout(() => {
         window.location.href = '/';
-      }, 1000);
+      }, 500);
 
-    } catch (error) {
-      console.error("Hard delete failed:", error);
-      alert("Une erreur est survenue lors de la suppression définitive du compte. Veuillez réessayer.");
+    } catch (error: any) {
+      console.error("Hard delete total failure:", error);
+      setDeleteError(error.message || "Une erreur inattendue est survenue.");
     } finally {
       isResettingRef.current = false;
     }
@@ -2806,9 +2732,12 @@ const App: React.FC = () => {
                             👋
                           </motion.span>
                         </h1>
-                        <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.25em]">
-                          {companyName || "AmbuFlow"}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <Logo size={24} className="-rotate-3" />
+                          <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.25em]">
+                            {companyName || "AmbuFlow"}
+                          </p>
+                        </div>
                       </div>
                     </div>
                     <div 
@@ -2945,6 +2874,90 @@ const App: React.FC = () => {
               setIsGuest={setIsGuest}
             />
           </motion.div>
+        </AnimatePresence>
+
+        {/* MODAL RE-AUTHENTIFICATION NÉCESSAIRE */}
+        <AnimatePresence>
+          {showReauthModal && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" 
+                onClick={() => setShowReauthModal(false)} 
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className={`relative w-full max-w-sm p-8 rounded-[40px] border ${effectiveDarkMode ? 'bg-slate-900 border-white/10' : 'bg-white border-slate-200'} shadow-2xl`}
+              >
+                <div className="w-16 h-16 rounded-3xl bg-amber-500/10 flex items-center justify-center text-amber-500 mb-6 mx-auto">
+                  <ShieldAlert size={32} />
+                </div>
+                <h3 className={`text-xl font-black mb-3 text-center ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>Sécurité Renforcée</h3>
+                <p className="text-slate-400 text-center text-xs font-medium leading-relaxed mb-8 uppercase tracking-widest px-4">
+                  Pour supprimer votre compte, Firebase nécessite une <span className="text-amber-500 font-black">connexion récente</span>. Veuillez vous reconnecter puis réessayer.
+                </p>
+                
+                <div className="space-y-3">
+                  <button 
+                    onClick={async () => {
+                      await signOut(auth);
+                      localStorage.clear();
+                      sessionStorage.clear();
+                      window.location.href = '/';
+                    }}
+                    className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] shadow-xl shadow-indigo-600/20 active:scale-95 transition-all"
+                  >
+                    Se déconnecter pour re-tester
+                  </button>
+                  <button 
+                    onClick={() => setShowReauthModal(false)}
+                    className="w-full py-5 text-slate-400 font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] hover:bg-slate-500/5 transition-all"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* MODAL ERREUR SUPPRESSION */}
+        <AnimatePresence>
+          {deleteError && (
+            <div className="fixed inset-0 z-[201] flex items-center justify-center p-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" 
+                onClick={() => setDeleteError(null)} 
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className={`relative w-full max-w-sm p-8 rounded-[40px] border ${effectiveDarkMode ? 'bg-slate-900 border-rose-500/30' : 'bg-white border-rose-100'} shadow-2xl`}
+              >
+                <div className="w-16 h-16 rounded-3xl bg-rose-500/10 flex items-center justify-center text-rose-500 mb-6 mx-auto">
+                  <AlertTriangle size={32} />
+                </div>
+                <h3 className={`text-xl font-black mb-3 text-center ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>Erreur</h3>
+                <p className="text-slate-400 text-center text-xs font-medium leading-relaxed mb-8 uppercase tracking-widest px-4">
+                  {deleteError}
+                </p>
+                <button 
+                  onClick={() => setDeleteError(null)}
+                  className="w-full mt-8 py-5 bg-slate-800 text-white font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] active:scale-95 transition-all"
+                >
+                  OK
+                </button>
+              </motion.div>
+            </div>
+          )}
         </AnimatePresence>
       </div>
       )}

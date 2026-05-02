@@ -715,7 +715,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete, userEmail }) => {
                 </button>
                 <button 
                   onClick={nextStep} 
-                  className="flex-1 py-5 bg-[#0F172A] text-white font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] shadow-xl shadow-slate-900/20 active:scale-[0.98] transition-all"
+                  className="flex-1 py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] shadow-xl shadow-indigo-600/30 active:scale-[0.98] transition-all"
                 >
                   Finaliser la configuration
                 </button>

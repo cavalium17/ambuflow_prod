@@ -18,40 +18,7 @@ import {
   Building2
 } from 'lucide-react';
 import { Shift, UserStats } from '../types';
-
-// Helper pour calculer les jours fériés français
-const getFrenchPublicHolidays = (year: number) => {
-  const holidays = [
-    `${year}-01-01`, `${year}-05-01`, `${year}-05-08`, `${year}-07-14`,
-    `${year}-08-15`, `${year}-11-01`, `${year}-11-11`, `${year}-12-25`,
-  ];
-  const a = year % 19, b = Math.floor(year / 100), c = year % 100,
-        d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25),
-        g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30,
-        i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7,
-        m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const n = h + l - 7 * m + 114;
-  const month = Math.floor(n / 31);
-  const day = (n % 31) + 1;
-  const easter = new Date(year, month - 1, day);
-  const addDays = (date: Date, days: number) => {
-    const d = new Date(date);
-    d.setDate(d.getDate() + days);
-    return d.toISOString().split('T')[0];
-  };
-  holidays.push(addDays(easter, 1)); // Lundi de Pâques
-  holidays.push(addDays(easter, 39)); // Ascension
-  holidays.push(addDays(easter, 50)); // Lundi de Pentecôte
-  return holidays;
-};
-
-const isSundayOrHoliday = (dateStr: string) => {
-  const date = new Date(dateStr);
-  if (date.getDay() === 0) return true;
-  const year = date.getFullYear();
-  const holidays = getFrenchPublicHolidays(year);
-  return holidays.includes(dateStr);
-};
+import { getFrenchPublicHolidays, isSundayOrHoliday, toMinutes } from '../src/lib/dateUtils';
 
 interface DailyRecapProps {
   shift: Shift;
@@ -102,13 +69,12 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
     } else {
       updatedShift.breaks = shift.breaks?.map(b => {
         if (b.id === editingItem.id) {
-          // Recalculate duration if possible
-          const [h1, m1] = editData.start.split(':').map(Number);
-          const [h2, m2] = editData.end.split(':').map(Number);
-          let duration = (h2 * 60 + m2) - (h1 * 60 + m1);
+          const startMin = toMinutes(editData.start);
+          const endMin = toMinutes(editData.end);
+          let duration = endMin - startMin;
           if (duration < 0) duration += 1440;
           
-          return { ...b, start: editData.start, end: editData.end, location: editData.location, duration: String(duration) };
+          return { ...b, start: editData.start, end: editData.end, location: editData.location, duration: duration };
         }
         return b;
       });
@@ -137,17 +103,9 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
   const calculateStats = () => {
     if (!shift.start || shift.end === '--:--') return null;
 
-    const [h1, m1] = (shift.start || "00:00").split(':').map(v => parseInt(v, 10) || 0);
-    const [h2, m2] = (shift.end || "00:00").split(':').map(v => parseInt(v, 10) || 0);
+    const startMin = toMinutes(shift.start || "00:00");
+    const endMin = toMinutes(shift.end || "00:00");
     
-    // Safety check for NaN
-    const validH1 = isNaN(h1) ? 0 : h1;
-    const validM1 = isNaN(m1) ? 0 : m1;
-    const validH2 = isNaN(h2) ? 0 : h2;
-    const validM2 = isNaN(m2) ? 0 : m2;
-
-    const startMin = validH1 * 60 + validM1;
-    const endMin = validH2 * 60 + validM2;
     let ampMin = endMin - startMin;
     if (ampMin < 0) ampMin += 1440;
 
