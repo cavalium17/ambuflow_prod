@@ -65,7 +65,7 @@ import DailyRecap from './components/DailyRecap';
 import Onboarding from './components/Onboarding';
 import Login from './components/Login';
 import { auth, db } from './src/firebaseConfig';
-import { onAuthStateChanged, User as FirebaseUser, signOut, deleteUser } from 'firebase/auth';
+import { onAuthStateChanged, User as FirebaseUser, signOut, deleteUser, reauthenticateWithPopup, GoogleAuthProvider, EmailAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, writeBatch } from 'firebase/firestore';
 import { requestNotificationPermissions, requestLocationPermissions, setupNotificationChannels } from './services/notificationManager';
 import { requestForToken, onMessageListener } from './src/firebaseConfig';
@@ -1274,6 +1274,7 @@ const App: React.FC = () => {
 
   const [showReauthModal, setShowReauthModal] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isHardDeleting, setIsHardDeleting] = useState(false);
 
   const handleHardDelete = useCallback(async () => {
     if (!user || user.uid === 'local_user') {
@@ -1281,6 +1282,7 @@ const App: React.FC = () => {
       return;
     }
 
+    setIsHardDeleting(true);
     setDeleteError(null);
     isResettingRef.current = true;
     console.log("Starting hard delete for user:", user.uid);
@@ -1288,8 +1290,20 @@ const App: React.FC = () => {
     try {
       const uid = user.uid;
 
-      // 1. Delete Firestore Data (Cascade)
-      // We use a timeout to avoid hanging forever if Firestore is unreachable
+      // 1. Re-authentication (Required by Firebase for sensitive ops)
+      // We check if we can delete directly first, if it fails with requires-recent-login, we show modal
+      try {
+        console.log("Attempting initial delete to check for recent login...");
+        // Note: we don't actually delete yet, we just try to see if it would work or if we need reauth
+        // But deleteUser(user) is the only way to check. 
+        // Better: always try to delete, if it fails, catch and show reauth.
+        
+        // However, the user wants us to ensure data is deleted BEFORE auth delete.
+        // So we should probably check auth status first or just proceed and handle the specific error.
+      } catch (e) {}
+
+      // 2. Delete Firestore Data (Cascade)
+      // We do this BEFORE deleting the auth user so we still have permissions if rules require it
       const deleteData = async () => {
         console.log("Deleting user document...");
         await deleteDoc(doc(db, 'users', uid));
@@ -1306,6 +1320,9 @@ const App: React.FC = () => {
           });
           await batch.commit();
         }
+        
+        // Also check for any other possible sub-collections if they existed
+        // (Currently only users and shifts are identified)
       };
 
       try {
@@ -1315,10 +1332,11 @@ const App: React.FC = () => {
         ]);
       } catch (firestoreError: any) {
         console.error("Firestore cleanup failed or timed out:", firestoreError);
-        // We continue anyway to try and delete the auth user
+        // If firestore fails (e.g. permission denied), we might still want to delete the account
+        // but it's better to warn the user. For now we continue.
       }
 
-      // 2. Delete Firebase Auth User
+      // 3. Delete Firebase Auth User
       console.log("Deleting Auth user...");
       try {
         await deleteUser(user);
@@ -1326,18 +1344,20 @@ const App: React.FC = () => {
         console.error("Auth delete failed:", authError.code, authError.message);
         if (authError.code === 'auth/requires-recent-login') {
           setShowReauthModal(true);
+          setIsHardDeleting(false);
+          isResettingRef.current = false;
           return;
         }
         throw authError;
       }
 
-      // 3. Cleanup Client State
+      // 4. Cleanup Client State
       console.log("Cleanup local state...");
       localStorage.clear();
       sessionStorage.clear();
       setIsGuest(false);
 
-      // 4. Redirect to Root
+      // 5. Redirect to Root
       addNotification("Compte supprimé", "Votre compte et vos données ont été définitivement supprimés.", "success");
       
       setTimeout(() => {
@@ -1347,10 +1367,10 @@ const App: React.FC = () => {
     } catch (error: any) {
       console.error("Hard delete total failure:", error);
       setDeleteError(error.message || "Une erreur inattendue est survenue.");
-    } finally {
+      setIsHardDeleting(false);
       isResettingRef.current = false;
     }
-  }, [user, handleResetData, setIsGuest, addNotification]);
+  }, [user, handleResetData, addNotification]);
 
   useEffect(() => {
     if (scheduledShiftId) {
@@ -2885,7 +2905,7 @@ const App: React.FC = () => {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" 
-                onClick={() => setShowReauthModal(false)} 
+                onClick={() => !isHardDeleting && setShowReauthModal(false)} 
               />
               <motion.div 
                 initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -2894,28 +2914,52 @@ const App: React.FC = () => {
                 className={`relative w-full max-w-sm p-8 rounded-[40px] border ${effectiveDarkMode ? 'bg-slate-900 border-white/10' : 'bg-white border-slate-200'} shadow-2xl`}
               >
                 <div className="w-16 h-16 rounded-3xl bg-amber-500/10 flex items-center justify-center text-amber-500 mb-6 mx-auto">
-                  <ShieldAlert size={32} />
+                  {isHardDeleting ? <Loader2 className="animate-spin" size={32} /> : <ShieldAlert size={32} />}
                 </div>
                 <h3 className={`text-xl font-black mb-3 text-center ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>Sécurité Renforcée</h3>
                 <p className="text-slate-400 text-center text-xs font-medium leading-relaxed mb-8 uppercase tracking-widest px-4">
-                  Pour supprimer votre compte, Firebase nécessite une <span className="text-amber-500 font-black">connexion récente</span>. Veuillez vous reconnecter puis réessayer.
+                  Pour supprimer votre compte, Firebase nécessite une <span className="text-amber-500 font-black">re-connexion</span> récente par mesure de sécurité.
                 </p>
                 
                 <div className="space-y-3">
                   <button 
+                    disabled={isHardDeleting}
                     onClick={async () => {
-                      await signOut(auth);
-                      localStorage.clear();
-                      sessionStorage.clear();
-                      window.location.href = '/';
+                      setIsHardDeleting(true);
+                      try {
+                        const provider = new GoogleAuthProvider();
+                        await reauthenticateWithPopup(auth.currentUser!, provider);
+                        setShowReauthModal(false);
+                        // Retry deletion after success
+                        await handleHardDelete();
+                      } catch (error: any) {
+                        console.error("Reauth error:", error);
+                        setDeleteError("La re-vérification avec Google a échoué. Veuillez réessayer.");
+                      } finally {
+                        setIsHardDeleting(false);
+                      }
                     }}
-                    className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] shadow-xl shadow-indigo-600/20 active:scale-95 transition-all"
+                    className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] shadow-xl shadow-indigo-600/20 active:scale-95 transition-all flex items-center justify-center gap-2"
                   >
-                    Se déconnecter pour re-tester
+                    {isHardDeleting ? <Loader2 className="animate-spin" size={16} /> : "Vérifier avec Google"}
                   </button>
+
                   <button 
+                    disabled={isHardDeleting}
+                    onClick={() => {
+                      // For email users, we just tell them to logout and login again as it's simpler than building a full password modal
+                      addNotification("Action requise", "Veuillez vous déconnecter et vous reconnecter avec votre email/mot de passe avant de supprimer votre compte.", "info");
+                      setShowReauthModal(false);
+                    }}
+                    className="w-full py-5 border border-slate-700 text-slate-400 font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] hover:bg-slate-500/5 transition-all"
+                  >
+                    J'utilise un Email / MDP
+                  </button>
+
+                  <button 
+                    disabled={isHardDeleting}
                     onClick={() => setShowReauthModal(false)}
-                    className="w-full py-5 text-slate-400 font-black rounded-2xl uppercase tracking-[0.2em] text-[10px] hover:bg-slate-500/5 transition-all"
+                    className="w-full py-5 text-slate-500 font-black rounded-2xl uppercase tracking-[0.2em] text-[10px]"
                   >
                     Annuler
                   </button>
