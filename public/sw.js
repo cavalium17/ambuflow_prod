@@ -1,11 +1,12 @@
-const CACHE_NAME = 'ambuflow-cache-v2';
+const CACHE_NAME = 'ambuflow-cache-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
   '/index.css',
-  '/pwa-192x192.png',
-  '/pwa-512x512.png',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/1000013491.mp4',
   'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap'
 ];
 
@@ -57,7 +58,7 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
           return response;
         })
-        .catch(() => caches.match('/index.html') || caches.match(request))
+        .catch(() => caches.match('/index.html'))
     );
     return;
   }
@@ -84,8 +85,8 @@ self.addEventListener('message', (event) => {
     const { title, body, icon, url } = event.data;
     const options = {
       body: body || 'AmbuFlow Update',
-      icon: icon || '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
+      icon: icon || '/icon-192.png',
+      badge: '/icon-192.png',
       vibrate: [100, 50, 100],
       data: { url: url || '/' }
     };

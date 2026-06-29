@@ -1,5 +1,6 @@
 
-import { auth } from '../firebaseConfig';
+import { auth, db } from '../firebaseConfig';
+import { disableNetwork } from 'firebase/firestore';
 
 export enum OperationType {
   CREATE = 'create',
@@ -48,6 +49,35 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   }
+  
+  const errorMsg = errInfo.error.toLowerCase();
+  const isQuotaOrLimitError = 
+    errorMsg.includes('quota') || 
+    errorMsg.includes('resource-exhausted') || 
+    errorMsg.includes('resource_exhausted') ||
+    errorMsg.includes('exhausted') ||
+    errorMsg.includes('billing') ||
+    errorMsg.includes('rate limit') ||
+    errorMsg.includes('limit exceeded');
+
   console.error('Firestore Error: ', JSON.stringify(errInfo));
+
+  if (isQuotaOrLimitError) {
+    (window as any).firestoreQuotaExceeded = true;
+    try {
+      localStorage.setItem('firestore_quota_exceeded', 'true');
+    } catch (e) {}
+    disableNetwork(db).catch(err => console.error("Could not disable network:", err));
+    window.dispatchEvent(new CustomEvent('firestore-quota-exceeded', { detail: errInfo }));
+    console.warn("Firestore Quota Exceeded. Suppressing crash to allow offline/local operations.");
+    return; // Suppress crash
+  }
+
+  // Shield the user from any background database write failures (since localStorage persists state locally)
+  if (operationType === OperationType.WRITE) {
+    console.warn(`Firestore background write failed on ${path}. Suppressed crash as data is saved locally.`);
+    return; // Suppress crash for writes
+  }
+
   throw new Error(JSON.stringify(errInfo));
 }

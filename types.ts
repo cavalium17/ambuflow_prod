@@ -33,11 +33,17 @@ export interface Shift {
   breaks?: Break[];
   preciseStart?: string; // ISO string for exact start time
   isLeave?: boolean;
-  leaveType?: 'CP' | 'MAL' | 'CSS' | 'AT';
+  leaveType?: 'CP' | 'MAL' | 'CSS' | 'AT' | 'SOLIDARITE';
   leaveDays?: number;
   endDate?: string;
   note?: string;
   isConge?: boolean;
+  isUnpaidButCounted?: boolean;
+  hours?: number;
+  isFerieChome?: boolean;
+  isCP?: boolean;
+  type?: string;
+  totalMinutes?: number;
 }
 
 export type AppTab = 'home' | 'planning' | 'paie' | 'profile';

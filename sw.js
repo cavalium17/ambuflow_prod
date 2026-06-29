@@ -4,8 +4,9 @@ const ASSETS_TO_CACHE = [
   '/index.html',
   '/manifest.json',
   '/index.css',
-  '/pwa-192x192.png',
-  '/pwa-512x512.png',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/1000013491.mp4',
   'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap'
 ];
 
@@ -39,11 +40,14 @@ self.addEventListener('activate', (event) => {
 // Stratégie de cache : Stale-While-Revalidate
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  if (request.method !== 'GET' || request.url.includes('firestore.googleapis.com')) return;
+  if (request.method !== 'GET' || 
+      request.url.includes('firestore.googleapis.com') || 
+      request.url.includes('identitytoolkit.googleapis.com') ||
+      request.url.includes('securetoken.googleapis.com')) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(() => caches.match('/index.html') || caches.match(request))
+      fetch(request).catch(() => caches.match('/index.html'))
     );
     return;
   }
@@ -69,8 +73,8 @@ self.addEventListener('message', (event) => {
     const { title, body, icon, url } = event.data;
     const options = {
       body: body || 'AmbuFlow Update',
-      icon: icon || '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
+      icon: icon || '/icon-192.png',
+      badge: '/icon-192.png',
       data: { url: url || '/' }
     };
     event.waitUntil(self.registration.showNotification(title, options));

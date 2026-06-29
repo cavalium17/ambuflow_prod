@@ -239,7 +239,7 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
                 </div>
               </div>
 
-              {/* Pauses */}
+               {/* Pauses */}
               {shift.breaks?.map(b => (
                 <div key={b.id} className={`flex items-center justify-between p-3 rounded-xl ${darkMode ? 'bg-white/5' : 'bg-slate-50'}`}>
                   <div className="flex items-center gap-3">
@@ -247,26 +247,18 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
                       {b.isMeal ? <Utensils size={16} /> : <Coffee size={16} />}
                     </div>
                     <div>
-                      <p className={`text-xs font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>{b.isMeal ? 'Coupure Repas' : 'Pause Café'}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className={`text-xs font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>{b.isMeal ? 'Coupure Repas' : 'Pause Café'}</p>
+                        {b.isMeal && (
+                          <span className={`text-[10px] font-bold ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                            • {b.location}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-2">
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{b.start} - {b.end}</p>
-                        {b.isMeal && <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">({b.location})</span>}
                       </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1 pr-1">
-                    <button 
-                      onClick={() => handleEdit('break', b.id)}
-                      className="p-1.5 text-slate-400 hover:text-indigo-500 transition-colors"
-                    >
-                      <Edit size={14} />
-                    </button>
-                    <button 
-                      onClick={() => handleDelete('break', b.id)}
-                      className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors"
-                    >
-                      <Trash2 size={14} />
-                    </button>
                   </div>
                 </div>
               ))}

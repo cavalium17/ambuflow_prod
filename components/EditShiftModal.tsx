@@ -9,10 +9,13 @@ import {
   PlusCircle, 
   AlertTriangle,
   Edit,
-  Trash2
+  Trash2,
+  Stethoscope,
+  Briefcase,
+  Car
 } from 'lucide-react';
 import { Shift, Break } from '../types';
-import { calculateEndTimeFromDuration, toMinutes } from '../src/lib/dateUtils';
+import { calculateEndTimeFromDuration, toMinutes, parseLocalDate } from '../src/lib/dateUtils';
 
 interface EditShiftModalProps {
   darkMode: boolean;
@@ -20,6 +23,9 @@ interface EditShiftModalProps {
   onClose: () => void;
   shift: Shift | null;
   onUpdate: (updatedShift: Shift) => void;
+  availableVehicles: string[];
+  primaryRole?: string;
+  todayStr: string;
 }
 
 export const EditShiftModal: React.FC<EditShiftModalProps> = ({
@@ -27,7 +33,10 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
   isOpen,
   onClose,
   shift,
-  onUpdate
+  onUpdate,
+  availableVehicles,
+  primaryRole,
+  todayStr
 }) => {
   const [editingShift, setEditingShift] = useState<Shift | null>(shift);
   const [editingBreakId, setEditingBreakId] = useState<string | null>(null);
@@ -45,6 +54,8 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
   }, [shift]);
 
   if (!isOpen || !editingShift) return null;
+
+  const isShiftPast = editingShift.day < todayStr;
 
   const isShiftValid = (() => {
     if (editingShift.end === '--:--') return true;
@@ -103,138 +114,225 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 animate-fadeIn">
       <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl" onClick={onClose} />
-      <div className={`relative w-full max-w-sm rounded-[32px] p-8 shadow-2xl animate-popIn border ${darkMode ? 'bg-[#15192D] border-white/10 text-white' : 'bg-white text-slate-900'} max-h-[90vh] overflow-y-auto no-scrollbar`}>
-        <div className="flex justify-between items-start mb-8">
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className={`relative w-full max-w-sm rounded-[32px] p-8 shadow-2xl animate-popIn border ${darkMode ? 'bg-[#15192D] border-white/10 text-white' : 'bg-white text-slate-900'} max-h-[85vh] flex flex-col`}
+      >
+        <div className="flex justify-between items-start mb-8 flex-shrink-0">
           <div>
             <h3 className="text-2xl font-black tracking-tight capitalize">Édition</h3>
-            <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1">{new Date(editingShift.day).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+            <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1">{parseLocalDate(editingShift.day).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
           </div>
           <button onClick={onClose} className={`p-3 rounded-2xl ${darkMode ? 'bg-slate-500/10' : 'bg-slate-100'}`}><X size={20} /></button>
         </div>
         
-        <div className="space-y-6">
-           <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Début</label>
-                <input type="time" className={inputClass} value={editingShift.start} onChange={e => setEditingShift({...editingShift, start: e.target.value})} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Fin</label>
-                <input type="time" className={inputClass} value={editingShift.end === '--:--' ? '' : editingShift.end} onChange={e => setEditingShift({...editingShift, end: e.target.value})} />
-              </div>
-           </div>
-
-           <div className={`space-y-4 pt-4 border-t ${darkMode ? 'border-white/10' : 'border-slate-500/10'}`}>
-                <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1 block">PAUSES & COUPURES</label>
-                
-                {editingShift.breaks && editingShift.breaks.length > 0 && (
-                  <div className="space-y-2">
-                    {editingShift.breaks.map(b => (
-                      <div key={b.id} className={`flex items-center justify-between p-3 rounded-xl border ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'}`}>
-                        <div className="flex items-center gap-3">
-                          <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-white/10' : 'bg-slate-100'}`}>
-                            {b.isMeal ? <Utensils size={14} className="text-indigo-400" /> : <Coffee size={14} className="text-amber-400" />}
-                          </div>
-                          <div className="flex flex-col text-left">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[10px] font-black">{b.start} - {b.end}</span>
-                              {b.isMeal && b.duration < 30 && (
-                                <div className="flex items-center gap-1 text-amber-500" title="Moins de 30 min">
-                                  <AlertTriangle size={10} />
-                                </div>
-                              )}
-                            </div>
-                            <span className="text-[8px] font-bold opacity-60 uppercase tracking-widest">{b.isMeal ? `REPAS (${b.location})` : 'CAFÉ'}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button onClick={() => startEditingBreak(b)} className="p-1.5 text-slate-400 hover:text-indigo-500 transition-colors"><Edit size={14} /></button>
-                          <button onClick={() => setEditingShift(p => p ? ({...p, breaks: p.breaks?.filter(br=>br.id!==b.id)}) : null)} className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {!tempBreak.isActive ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <button 
-                      onClick={() => { setEditingBreakId(null); setTempBreak({ ...tempBreak, isActive: true, type: 'cafe', duration: 15, start: '10:00' }); }}
-                      className={`flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'border-white/10 hover:bg-white/5' : 'border-slate-200 hover:bg-slate-50'} text-slate-400`}
-                    >
-                      <Coffee size={14} /> + PAUSE CAFÉ
-                    </button>
-                    <button 
-                      onClick={() => { setEditingBreakId(null); setTempBreak({ ...tempBreak, isActive: true, type: 'repas', duration: 45, start: '12:00' }); }}
-                      className={`flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'border-white/10 hover:bg-white/5' : 'border-slate-200 hover:bg-slate-50'} text-slate-400`}
-                    >
-                      <Utensils size={14} /> + COUPURE REPAS
-                    </button>
-                  </div>
-                ) : (
-                  <div className={`p-5 rounded-2xl border space-y-5 animate-slideUp ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20' : 'bg-indigo-50 border-indigo-100'}`}>
-                    <div className="flex justify-between items-center text-left">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-indigo-500">{editingBreakId ? 'Modifier' : 'Ajouter'} {tempBreak.type === 'cafe' ? 'Pause Café' : 'Coupure Repas'}</span>
-                      <button onClick={() => { setTempBreak({ ...tempBreak, isActive: false }); setEditingBreakId(null); }} className="p-1"><X size={14} /></button>
-                    </div>
-
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Début</label>
-                        <input 
-                          type="time" 
-                          className={`bg-transparent font-black text-indigo-500 outline-none text-right cursor-pointer`} 
-                          value={tempBreak.start} 
-                          onChange={e => setTempBreak({ ...tempBreak, start: e.target.value })} 
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                          <span>Durée : {tempBreak.duration} min</span>
-                          <span className="text-indigo-400">Fin : {calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration)}</span>
-                        </div>
-                        <input 
-                          type="range" 
-                          min="1" 
-                          max="120" 
-                          className="w-full h-1.5 accent-indigo-500" 
-                          value={tempBreak.duration} 
-                          onChange={e => setTempBreak({ ...tempBreak, duration: parseInt(e.target.value) })} 
-                        />
-                      </div>
-
-                      {tempBreak.type === 'repas' && (
-                        <div className="grid grid-cols-2 gap-2">
-                          <button 
-                            onClick={() => setTempBreak({ ...tempBreak, location: 'Entreprise' })}
-                            className={`flex items-center justify-center gap-1.5 p-2 rounded-lg border text-[8px] font-black uppercase transition-all ${tempBreak.location === 'Entreprise' ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : (darkMode ? 'border-white/5 text-slate-400' : 'border-slate-200 text-slate-500')}`}
-                          >
-                            <Building2 size={12} /> Entreprise
-                          </button>
-                          <button 
-                            onClick={() => setTempBreak({ ...tempBreak, location: 'Extérieur' })}
-                            className={`flex items-center justify-center gap-1.5 p-2 rounded-lg border text-[8px] font-black uppercase transition-all ${tempBreak.location === 'Extérieur' ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : (darkMode ? 'border-white/5 text-slate-400' : 'border-slate-200 text-slate-500')}`}
-                          >
-                            <MapPin size={12} /> Extérieur
-                          </button>
-                        </div>
-                      )}
-
-                      <button 
-                        onClick={addOrUpdateBreak}
-                        className="w-full py-3 rounded-xl bg-indigo-600 text-white font-black text-[10px] uppercase tracking-widest shadow-lg flex items-center justify-center gap-2"
-                      >
-                        <PlusCircle size={14} /> {editingBreakId ? 'Mettre à jour' : 'Ajouter'}
-                      </button>
-                    </div>
-                  </div>
-                )}
+        <div className="overflow-y-auto flex-1 pb-6 no-scrollbar space-y-6">
+           {editingShift.isFerieChome ? (
+             <div className="p-6 rounded-2xl bg-violet-500/5 border border-violet-500/20 text-center space-y-2">
+               <p className="text-sm font-black text-violet-500 uppercase tracking-widest">Jour férié chômé</p>
+               <p className="text-xs text-slate-400 font-medium font-sans">Ce jour férié non travaillé est automatiquement valorisé à hauteur de 7h de TTE.</p>
              </div>
+           ) : editingShift.isLeave ? (
+             editingShift.leaveType === 'SOLIDARITE' ? (
+               <div className="space-y-4">
+                 <div className="space-y-2 p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/20 text-left">
+                   <label className="text-[10px] font-black text-indigo-500 uppercase tracking-widest block px-1 mb-2">Heures effectuées</label>
+                   <div className="flex items-center justify-between gap-4">
+                     <input 
+                       type="number" 
+                       min="1" 
+                       max="24"
+                       step="0.5"
+                       placeholder="Ex: 5"
+                       className={`w-full p-3 rounded-xl border text-center font-black outline-none transition-all ${
+                         darkMode 
+                           ? 'bg-[#0F1221] border-[#6366F1]/30 text-white focus:border-indigo-500' 
+                           : 'bg-white border-slate-200 text-slate-900 focus:border-indigo-500'
+                       }`}
+                       value={editingShift.hours || 5} 
+                       onChange={(e) => setEditingShift({...editingShift, hours: parseFloat(e.target.value) || 0})} 
+                     />
+                     <span className="text-[10px] font-black text-indigo-500 shrink-0 uppercase tracking-widest font-sans">Heures</span>
+                   </div>
+                   <p className={`text-[9px] font-bold italic leading-snug px-1 mt-2 ${darkMode ? 'text-indigo-400/80 font-sans' : 'text-slate-500 font-sans'}`}>
+                     * Les heures entrent dans le quota de modulation mensuelle mais ont un taux horaire de 0 pour le calcul du Net.
+                   </p>
+                 </div>
+               </div>
+             ) : (
+               <div className="p-6 rounded-2xl bg-orange-500/5 border border-orange-500/20 text-center space-y-2">
+                 <p className="text-sm font-black text-orange-500 uppercase tracking-widest">Congé : {editingShift.leaveType || 'CP'}</p>
+                 <p className="text-xs text-slate-400 font-medium">Ce congé est comptabilisé en journées entières.</p>
+               </div>
+             )
+           ) : (
+             <>
+               <div className={isShiftPast ? "grid grid-cols-2 gap-4" : "grid grid-cols-1 gap-4"}>
+                  <div className="space-y-2">
+                    <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Début</label>
+                    <input type="time" className={inputClass} value={editingShift.start} onChange={e => setEditingShift({...editingShift, start: e.target.value})} />
+                  </div>
+                  {isShiftPast && (
+                    <div className="space-y-2">
+                      <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Fin</label>
+                      <input type="time" className={inputClass} value={editingShift.end === '--:--' ? '' : editingShift.end} onChange={e => setEditingShift({...editingShift, end: e.target.value})} />
+                    </div>
+                  )}
+               </div>
+
+               {(primaryRole !== 'taxi') && (
+                 <div className="space-y-2">
+                   <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Véhicule</label>
+                   <div className="grid grid-cols-3 gap-2">
+                     {availableVehicles.map((v) => {
+                       const isSelected = editingShift.vehicle === v;
+                       const Icon = v.includes('ASSU') ? Stethoscope : (v.includes('VSL') ? Briefcase : (v.includes('TAXI') ? Car : Car));
+                       const vBg = v.includes('ASSU') ? 'bg-[#FF4B5C]' : (v.includes('VSL') ? 'bg-indigo-500' : (v.includes('TAXI') ? 'bg-amber-500' : 'bg-emerald-500'));
+                       
+                       return (
+                         <button
+                           key={v}
+                           type="button"
+                           onClick={() => setEditingShift({ ...editingShift, vehicle: v })}
+                           className={`flex flex-col items-center justify-center p-3 rounded-2xl border-2 transition-all gap-1 ${
+                             isSelected 
+                               ? `${vBg} border-white/20 text-white` 
+                               : (darkMode ? 'bg-white/5 border-white/5 text-slate-400' : 'bg-slate-50 border-slate-100 text-slate-500')
+                           }`}
+                         >
+                           <Icon size={18} />
+                           <span className="text-[8px] font-black uppercase tracking-widest">{v}</span>
+                         </button>
+                       );
+                     })}
+                   </div>
+                 </div>
+               )}
+
+               <div className={`space-y-4 pt-4 border-t ${darkMode ? 'border-white/10' : 'border-slate-500/10'}`}>
+                    <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1 block">PAUSES & COUPURES</label>
+                    
+                    {editingShift.breaks && editingShift.breaks.length > 0 && (
+                      <div className="space-y-2">
+                        {editingShift.breaks.map(b => (
+                          <div key={b.id} className={`flex items-center justify-between p-3 rounded-xl border ${darkMode ? 'bg-white/5 border-white/5' : 'bg-slate-50 border-slate-100'}`}>
+                            <div className="flex items-center gap-3">
+                              <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-white/10' : 'bg-slate-100'}`}>
+                                {b.isMeal ? <Utensils size={14} className="text-indigo-400" /> : <Coffee size={14} className="text-amber-400" />}
+                              </div>
+                              <div className="flex flex-col text-left">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-black">{b.start} - {b.end}</span>
+                                  {b.isMeal && b.duration < 30 && (
+                                    <div className="flex items-center gap-1 text-amber-500" title="Moins de 30 min">
+                                      <AlertTriangle size={10} />
+                                    </div>
+                                  )}
+                                </div>
+                                <span className="text-[8px] font-bold opacity-60 uppercase tracking-widest">{b.isMeal ? `REPAS (${b.location})` : 'CAFÉ'}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button type="button" onClick={() => startEditingBreak(b)} className="p-1.5 text-slate-400 hover:text-indigo-500 transition-colors"><Edit size={14} /></button>
+                              <button type="button" onClick={() => setEditingShift(p => p ? ({...p, breaks: p.breaks?.filter(br=>br.id!==b.id)}) : null)} className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {!tempBreak.isActive ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        <button 
+                          type="button"
+                          onClick={() => { setEditingBreakId(null); setTempBreak({ ...tempBreak, isActive: true, type: 'cafe', duration: 15, start: '10:00' }); }}
+                          className={`flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'border-white/10 hover:bg-white/5' : 'border-slate-200 hover:bg-slate-50'} text-slate-400`}
+                        >
+                          <Coffee size={14} /> + PAUSE CAFÉ
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => { setEditingBreakId(null); setTempBreak({ ...tempBreak, isActive: true, type: 'repas', duration: 45, start: '12:00' }); }}
+                          className={`flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed text-[10px] font-black uppercase tracking-widest transition-all ${darkMode ? 'border-white/10 hover:bg-white/5' : 'border-slate-200 hover:bg-slate-50'} text-slate-400`}
+                        >
+                          <Utensils size={14} /> + COUPURE REPAS
+                        </button>
+                      </div>
+                    ) : (
+                      <div className={`p-5 rounded-2xl border space-y-5 animate-slideUp ${darkMode ? 'bg-indigo-500/5 border-indigo-500/20' : 'bg-indigo-50 border-indigo-100'}`}>
+                        <div className="flex justify-between items-center text-left">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-indigo-500">{editingBreakId ? 'Modifier' : 'Ajouter'} {tempBreak.type === 'cafe' ? 'Pause Café' : 'Coupure Repas'}</span>
+                          <button type="button" onClick={() => { setTempBreak({ ...tempBreak, isActive: false }); setEditingBreakId(null); }} className="p-1"><X size={14} /></button>
+                        </div>
+
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Début</label>
+                            <input 
+                              type="time" 
+                              className={`bg-transparent font-black text-indigo-500 outline-none text-right cursor-pointer`} 
+                              value={tempBreak.start} 
+                              onChange={e => setTempBreak({ ...tempBreak, start: e.target.value })} 
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                              <span>Durée : {tempBreak.duration} min</span>
+                              <span className="text-indigo-400">Fin : {calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration)}</span>
+                            </div>
+                            <input 
+                              type="range" 
+                              min="1" 
+                              max="120" 
+                              className="w-full h-1.5 accent-indigo-500" 
+                              value={tempBreak.duration} 
+                              onChange={e => setTempBreak({ ...tempBreak, duration: parseInt(e.target.value) })} 
+                            />
+                          </div>
+
+                          {tempBreak.type === 'repas' && (
+                            <div className="grid grid-cols-2 gap-2">
+                              <button 
+                                type="button"
+                                onClick={() => setTempBreak({ ...tempBreak, location: 'Entreprise' })}
+                                className={`flex items-center justify-center gap-1.5 p-2 rounded-lg border text-[8px] font-black uppercase transition-all ${tempBreak.location === 'Entreprise' ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : (darkMode ? 'border-white/5 text-slate-400' : 'border-slate-200 text-slate-500')}`}
+                              >
+                                <Building2 size={12} /> Entreprise
+                              </button>
+                              <button 
+                                type="button"
+                                onClick={() => setTempBreak({ ...tempBreak, location: 'Extérieur' })}
+                                className={`flex items-center justify-center gap-1.5 p-2 rounded-lg border text-[8px] font-black uppercase transition-all ${tempBreak.location === 'Extérieur' ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : (darkMode ? 'border-white/5 text-slate-400' : 'border-slate-200 text-slate-500')}`}
+                              >
+                                <MapPin size={12} /> Extérieur
+                              </button>
+                            </div>
+                          )}
+
+                          <button 
+                            type="button"
+                            onClick={addOrUpdateBreak}
+                            className="w-full py-3 rounded-xl bg-indigo-600 text-white font-black text-[10px] uppercase tracking-widest shadow-lg flex items-center justify-center gap-2"
+                          >
+                            <PlusCircle size={14} /> {editingBreakId ? 'Mettre à jour' : 'Ajouter'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                 </div>
+             </>
+           )}
 
            <div className="space-y-3">
              <button 
-               onClick={() => onUpdate(editingShift)} 
+               onClick={() => {
+                  const finalShift = {
+                    ...editingShift,
+                    end: isShiftPast ? editingShift.end : '--:--'
+                  };
+                  onUpdate(finalShift);
+                }}
                disabled={!isShiftValid}
                className={`w-full py-5 rounded-[24px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all border border-white/10 ${!isShiftValid ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 text-white'}`}
              >

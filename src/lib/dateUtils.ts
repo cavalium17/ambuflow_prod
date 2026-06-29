@@ -8,6 +8,13 @@ export const getLocalDateString = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
+export const parseLocalDate = (dayStr: string): Date => {
+  if (!dayStr || typeof dayStr !== 'string') return new Date();
+  const [year, month, day] = dayStr.split('-').map(Number);
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return new Date();
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
+};
+
 export const getFrenchPublicHolidays = (year: number) => {
   const holidays: Record<string, string> = {
     [`${year}-01-01`]: "Nouvel An",
@@ -95,6 +102,7 @@ export const calculateBusinessDays = (start: string, end: string, weekendDays: s
 };
 
 export const calculateTotalDurationMinutes = (shift: Shift) => {
+    if (shift.isFerieChome || shift.isCP || (shift.isLeave && shift.leaveType === 'CP')) return 420;
     if (!shift.start || !shift.end || shift.end === '--:--') return 0;
     
     const startParts = shift.start.split(':');

@@ -7,6 +7,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { getFiveNearbyRestaurants } from './services/restaurantService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,6 +69,27 @@ async function startServer() {
   // API Routes
   app.get('/api/test', (req, res) => {
     res.json({ message: "Hello from AmbuFlow API" });
+  });
+
+  // RESTAURANTS SEARCH PROXY
+  app.post('/api/restaurants', async (req, res) => {
+    try {
+      const { vehicleType, latitude, longitude, modeTransport, maxDurationMinutes } = req.body;
+      
+      const vType = vehicleType || 'AMBU';
+      const lat = typeof latitude === 'number' ? latitude : 44.837789; // Bordeaux par défaut
+      const lng = typeof longitude === 'number' ? longitude : -0.57918;
+      const mTransport = modeTransport === 'A_PIED' || modeTransport === 'EN_VOITURE' ? modeTransport : 'EN_VOITURE';
+      const maxTime = typeof maxDurationMinutes === 'number' ? maxDurationMinutes : 10;
+
+      console.log(`Searching 5 restaurants for vehicle ${vType}, mode: ${mTransport}, maxTime: ${maxTime} min`);
+      
+      const restaurants = await getFiveNearbyRestaurants(vType, lat, lng, mTransport, maxTime);
+      res.status(200).json({ success: true, restaurants });
+    } catch (error: any) {
+      console.error("API error searching restaurants:", error);
+      res.status(500).json({ success: false, error: error.message || 'Internal Server Error' });
+    }
   });
 
   // SAVE PLANNING

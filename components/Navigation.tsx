@@ -37,8 +37,8 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, darkMo
   };
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[94%] max-w-md z-50 pointer-events-none">
-      <nav className={`h-18 pointer-events-auto transition-all duration-500 rounded-[28px] px-2 flex items-center justify-between border backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.3)] ${
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-xl z-50">
+      <nav className={`h-18 transition-all duration-500 rounded-[28px] px-2 flex items-center justify-between border backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.3)] ${
         darkMode 
           ? 'bg-slate-900/80 border-white/10' 
           : 'bg-white/90 border-slate-200'

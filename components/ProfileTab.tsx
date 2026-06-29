@@ -10,10 +10,12 @@ import {
   Building2, 
   Clock, 
   Zap, 
-  TrendingUp,
   Briefcase,
   Trash2,
   Euro,
+  Plus,
+  Minus,
+  Info,
   ChevronRight,
   Check,
   Star,
@@ -31,6 +33,7 @@ import {
   RefreshCw,
   Camera,
   Loader2,
+  Layers,
   Calendar as CalendarIcon,
   Smartphone
 } from 'lucide-react';
@@ -85,8 +88,8 @@ interface ProfileTabProps {
   setInitialCpBalance: (val: number) => void;
   weeklyContractHours: number;
   setWeeklyContractHours: (val: number) => void;
-  overtimeMode: 'weekly' | 'biweekly' | 'modulation' | 'annualized';
-  setOvertimeMode: (val: 'weekly' | 'biweekly' | 'modulation' | 'annualized') => void;
+  overtimeMode?: 'weekly' | 'biweekly' | 'modulation' | 'annualized';
+  setOvertimeMode?: (val: 'weekly' | 'biweekly' | 'modulation' | 'annualized') => void;
   payRateMode: '100_percent' | '90_percent';
   setPayRateMode: (val: '100_percent' | '90_percent') => void;
   pushEnabled: boolean;
@@ -202,9 +205,11 @@ export default function ProfileTab({
     }
   };
 
-  const bentoCardBase = `relative overflow-hidden transition-all duration-300 rounded-[32px] border ${
-    darkMode ? 'bg-slate-900/60 border-white/5' : 'bg-white border-slate-100 shadow-xl shadow-slate-200/40'
-  } backdrop-blur-xl`;
+  const bentoCardBase = `relative overflow-hidden transition-all duration-300 rounded-[32px] border backdrop-blur-xl shadow-sm ${
+    darkMode 
+      ? 'bg-slate-900/60 border-white/5' 
+      : 'bg-white/60 border-white/40'
+  }`;
 
   const workRegimeLabels: Record<string, string> = {
     weekly: 'Hebdomadaire',
@@ -215,7 +220,13 @@ export default function ProfileTab({
 
   const formatDate = (dateStr: string) => {
     if (!dateStr) return 'N/A';
-    return new Date(dateStr).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'N/A';
+      return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+    } catch (e) {
+      return 'N/A';
+    }
   };
 
   const seniorityText = seniorityInfo?.text || "N/A";
@@ -331,7 +342,7 @@ export default function ProfileTab({
                   value={modulationStartDate}
                   onChange={(e) => setModulationStartDate?.(e.target.value)}
                   className={`w-full p-4 rounded-2xl border font-black outline-none transition-all ${
-                    darkMode ? 'bg-slate-950 border-white/5 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                    darkMode ? 'bg-slate-950/50 border-white/10 text-white' : 'bg-white/40 border-white/60 text-slate-900'
                   }`}
                 />
               </div>
@@ -392,7 +403,7 @@ export default function ProfileTab({
                   key={role}
                   className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg ${
                     primaryRole === role 
-                      ? 'bg-indigo-500 text-white shadow-indigo-500/20' 
+                      ? 'bg-indigo-600 text-white shadow-indigo-600/20' 
                       : 'bg-slate-500/10 border border-white/5 text-slate-400'
                   }`}
                 >
@@ -499,11 +510,24 @@ export default function ProfileTab({
         
         <div className="space-y-6">
           <div className="flex flex-col gap-1">
-            <p className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+            <p className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
               En poste chez <span className="text-indigo-500 font-black uppercase tracking-tight">{companyName || '...'}</span>
             </p>
-            <p className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
-              depuis le <span className="text-amber-500 font-black">{formatDate(contractStartDate)}</span>
+            <p className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              depuis le <span className="relative inline-block cursor-pointer">
+                <span 
+                  className={`font-black hover:opacity-80 transition-opacity border-b-2 border-dotted pb-0.5 ${!contractStartDate ? 'text-slate-400 border-slate-400/20 italic' : 'text-amber-500 border-amber-500/20'}`}
+                >
+                  {contractStartDate ? formatDate(contractStartDate) : 'définir la date'}
+                </span>
+                <input 
+                  type="date"
+                  value={contractStartDate}
+                  onChange={(e) => setContractStartDate?.(e.target.value)}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                  title="Modifier la date d'entrée"
+                />
+              </span>
             </p>
           </div>
 
@@ -511,190 +535,360 @@ export default function ProfileTab({
 
           <div className="grid grid-cols-1 gap-4">
             {/* Base Hebdomadaire */}
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-500/5 border border-white/5">
+            <div className={`flex items-center justify-between p-4 rounded-2xl border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
               <div className="flex items-center gap-3">
-                <Clock size={16} className="text-indigo-500" />
-                <span className="text-xs font-black uppercase tracking-widest text-slate-400">Base Hebdo</span>
+                <Clock size={16} className="text-indigo-400" />
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Régime Hebdo</span>
+                  <div className="group relative">
+                    <Info size={12} className="text-slate-400 cursor-help transition-colors hover:text-indigo-400" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-900 border border-white/10 rounded-xl text-[8px] font-bold text-slate-300 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-2xl">
+                      Définit votre base d'heures contractuelle par semaine (ex: 35h).
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <input 
-                  type="number"
-                  value={weeklyContractHours}
-                  onChange={(e) => setWeeklyContractHours(Number(e.target.value))}
-                  className={`bg-transparent text-sm font-black text-right w-12 outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
-                />
-                <span className="text-xs font-bold text-slate-500">h</span>
+              <div className={`flex items-center justify-between w-[120px] p-1 rounded-xl border ${
+                darkMode ? 'bg-slate-950/20 border-white/10' : 'bg-white/40 border-white'
+              }`}>
+                <button 
+                  onClick={() => setWeeklyContractHours?.(Math.max(1, weeklyContractHours - 1))}
+                  className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                    darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
+                  }`}
+                >
+                  <Minus size={14} />
+                </button>
+                <div className="flex items-baseline gap-0.5">
+                  <span className={`text-sm font-black tabular-nums transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {weeklyContractHours}
+                  </span>
+                  <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">h</span>
+                </div>
+                <button 
+                  onClick={() => setWeeklyContractHours?.(weeklyContractHours + 1)}
+                  className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                    darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
+                  }`}
+                >
+                  <Plus size={14} />
+                </button>
               </div>
             </div>
 
-            {/* Mode Heures Supp */}
-            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-slate-500/5 border border-white/5">
+            {/* Régime de Travail */}
+            <div className={`flex flex-col gap-4 p-5 rounded-[28px] border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <TrendingUp size={16} className="text-indigo-500" />
-                  <span className="text-xs font-black uppercase tracking-widest text-slate-400">Calcul Heures Supp.</span>
-                </div>
-                <select 
-                  value={overtimeMode}
-                  onChange={(e) => {
-                    const mode = e.target.value as any;
-                    setOvertimeMode(mode);
-                    if (mode === 'modulation') {
-                      setWorkRegime('modulation');
-                      setShowModulationDateModal(true);
-                    } else {
-                      setWorkRegime('weekly');
-                    }
-                  }}
-                  className={`bg-transparent text-sm font-black text-right outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
-                >
-                  <option value="weekly">Hebdomadaire</option>
-                  <option value="biweekly">Quinzaine</option>
-                  <option value="modulation">Modulation</option>
-                  <option value="annualized">Annuel</option>
-                </select>
-              </div>
-              {overtimeMode === 'modulation' && (
-                <div className="flex flex-col gap-2 pt-2 border-t border-white/5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Cycle (semaines)</span>
-                    <select 
-                      value={modulationWeeks}
-                      onChange={(e) => setModulationWeeks?.(e.target.value)}
-                      className={`bg-transparent text-xs font-black text-right outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
-                    >
-                      {[4, 5, 6, 7, 8, 9, 10, 11, 12].map(w => (
-                        <option key={w} value={w.toString()}>{w} semaines</option>
-                      ))}
-                    </select>
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-indigo-500/10' : 'bg-indigo-50'}`}>
+                    <Briefcase size={16} className="text-indigo-500" />
                   </div>
-                  <button 
-                    onClick={() => setShowModulationDateModal(true)}
-                    className="flex items-center justify-between group hover:opacity-80 transition-opacity"
-                  >
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Date Début</span>
-                    <span className="text-xs font-black text-indigo-500 underline underline-offset-4 decoration-indigo-500/30">
-                      {modulationStartDate ? formatDate(modulationStartDate) : 'Définir'}
-                    </span>
-                  </button>
-                  {modulationEndDate && (
-                    <div className="flex flex-col gap-2 bg-indigo-500/5 p-3 rounded-xl border border-indigo-500/10">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Cycle en cours</span>
-                        <div className="flex flex-col items-end">
-                          <span className="text-[10px] font-black text-indigo-400">
-                            {formatDate(modulationStartDate)} au
-                          </span>
-                          <span className="text-[10px] font-black text-indigo-400">
-                            {formatDate(modulationEndDate.toISOString().split('T')[0])}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Régime de travail</span>
                 </div>
-              )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: 'weekly', label: 'Hebdomadaire' },
+                  { id: 'fortnightly', label: 'Quinzaine / Cycles' },
+                  { id: 'modulation', label: 'Modulation' },
+                  { id: 'annualization', label: 'Annualisation' }
+                ].map(regime => (
+                  <button
+                    key={regime.id}
+                    onClick={() => setWorkRegime?.(regime.id)}
+                    className={`py-3 rounded-[20px] text-[10px] font-black uppercase tracking-widest transition-all border ${
+                      workRegime === regime.id 
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/20' 
+                        : (darkMode ? 'bg-slate-950/40 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50')
+                    }`}
+                  >
+                    {regime.label}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {/* Paramètres de Cycle / Modulation */}
+            {(workRegime === 'fortnightly' || workRegime === 'modulation') && (
+              <div className={`flex flex-col gap-4 p-5 rounded-[28px] border backdrop-blur-md shadow-sm ${
+                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+              }`}>
+                <div className="flex items-center gap-3 mb-1">
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-amber-500/10' : 'bg-amber-50'}`}>
+                    <CalendarIcon size={16} className="text-amber-500" />
+                  </div>
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Cycle de Modulation</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Date de début de référence</label>
+                    <input 
+                      type="date" 
+                      value={modulationStartDate}
+                      onChange={(e) => setModulationStartDate?.(e.target.value)}
+                      className={`w-full p-3 rounded-xl border text-xs font-black outline-none transition-all ${
+                        darkMode ? 'bg-slate-950/50 border-white/10 text-white focus:border-indigo-500' : 'bg-white/80 border-slate-200 text-slate-900 focus:border-indigo-500'
+                      }`}
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Durée de cycle (semaines)</label>
+                    <div className={`flex items-center justify-between p-1 rounded-xl border ${
+                      darkMode ? 'bg-slate-950/20 border-white/10' : 'bg-white/40 border-slate-200'
+                    }`}>
+                      <button 
+                        type="button"
+                        onClick={() => setModulationWeeks?.(String(Math.max(1, (parseInt(modulationWeeks) || 1) - 1)))}
+                        className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                          darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
+                        }`}
+                      >
+                        <Minus size={12} />
+                      </button>
+                      <div className="flex items-baseline gap-0.5">
+                        <span className={`text-xs font-black tabular-nums ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {modulationWeeks}
+                        </span>
+                        <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">sem.</span>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => setModulationWeeks?.(String((parseInt(modulationWeeks) || 1) + 1))}
+                        className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                          darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
+                        }`}
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {modulationStartDate && (
+                  <div className={`p-3 rounded-2xl text-[9px] font-bold uppercase tracking-widest flex items-center justify-between ${
+                    darkMode ? 'bg-indigo-500/5 text-indigo-400 border border-indigo-500/10' : 'bg-indigo-50 text-indigo-700 border border-indigo-100'
+                  }`}>
+                    <span>Cycle actif calculé :</span>
+                    <span>Modulation de {modulationWeeks} sem.</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Mode Rémunération */}
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-500/5 border border-white/5">
-              <div className="flex items-center gap-3">
-                <Briefcase size={16} className="text-indigo-500" />
-                <span className="text-xs font-black uppercase tracking-widest text-slate-400">Rémunération</span>
+            <div className={`flex flex-col gap-4 p-5 rounded-[28px] border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-indigo-500/10' : 'bg-indigo-50'}`}>
+                    <Briefcase size={16} className="text-indigo-500" />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Rémunération</span>
+                    <div className="group relative">
+                      <Info size={12} className="text-slate-400 cursor-help transition-colors hover:text-indigo-400" />
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-3 bg-slate-900 border border-white/10 rounded-xl text-[8px] font-bold text-slate-300 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-2xl leading-relaxed">
+                        <p className="mb-1 text-indigo-400 uppercase tracking-wider">Modes conventionnels :</p>
+                        <p className="mb-1 text-white">100% au réel: Amplitude totale - temps de pause saisis.</p>
+                        <p className="text-white">90% coefficient: Amplitude x 0.90 (pauses incluses).</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <select 
-                value={payRateMode}
-                onChange={(e) => setPayRateMode(e.target.value as any)}
-                className={`bg-transparent text-sm font-black text-right outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
-              >
-                <option value="100_percent">100%</option>
-                <option value="90_percent">90%</option>
-              </select>
+              <div className="grid grid-cols-2 gap-2">
+                <button 
+                  onClick={() => setPayRateMode('100_percent')}
+                  className={`py-3 rounded-[20px] text-[10px] font-black uppercase tracking-widest transition-all border ${
+                    payRateMode === '100_percent' 
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/20' 
+                      : (darkMode ? 'bg-slate-950/40 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50')
+                  }`}
+                >
+                  100% au réel
+                </button>
+                <button 
+                  onClick={() => setPayRateMode('90_percent')}
+                  className={`py-3 rounded-[20px] text-[10px] font-black uppercase tracking-widest transition-all border ${
+                    payRateMode === '90_percent' 
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/20' 
+                      : (darkMode ? 'bg-slate-950/40 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50')
+                  }`}
+                >
+                  90% coefficient
+                </button>
+              </div>
             </div>
 
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-500/5 border border-white/5">
+            <div className={`flex items-center justify-between p-4 rounded-2xl border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
               <div className="flex items-center gap-3">
                 <Euro size={16} className="text-emerald-500" />
-                <span className="text-xs font-black uppercase tracking-widest text-slate-400">Taux horaire</span>
+                <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Taux horaire</span>
               </div>
-              <div className="flex items-center gap-1">
+              <div className={`flex items-center gap-1 p-2 rounded-xl border ${
+                darkMode ? 'bg-slate-950/20 border-white/10' : 'bg-white/40 border-white'
+              }`}>
                 <input 
-                  type="text"
+                  type="number"
+                  step="0.01"
                   value={hourlyRate}
                   onChange={(e) => setHourlyRate?.(e.target.value)}
-                  className={`bg-transparent text-sm font-black text-right w-16 outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
+                  className={`bg-transparent text-sm font-black text-right w-20 outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
                 />
-                <span className="text-sm font-black text-emerald-500">€/h</span>
+                <span className="text-[10px] font-black text-emerald-500 uppercase">€/h</span>
               </div>
             </div>
 
-            {/* Congés Payés Restants */}
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-500/5 border border-white/5">
-              <div className="flex items-center gap-3">
-                <CalendarIcon size={16} className="text-orange-500" />
-                <span className="text-xs font-black uppercase tracking-widest text-slate-400">Congés payés restants</span>
+            {/* Congés Payés restants & Mode Calcul */}
+            <div className={`flex flex-col gap-4 p-5 rounded-[28px] border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-orange-500/10' : 'bg-orange-50'}`}>
+                    <CalendarIcon size={16} className="text-orange-500" />
+                  </div>
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Gestion des Congés</span>
+                </div>
+                <div className={`flex items-center gap-1 p-2 rounded-xl border ${
+                  darkMode ? 'bg-slate-950/20 border-white/10' : 'bg-white/40 border-white'
+                }`}>
+                  <input 
+                    type="number"
+                    value={initialCpBalance}
+                    onChange={(e) => setInitialCpBalance(Number(e.target.value))}
+                    className={`bg-transparent text-sm font-black text-right w-12 outline-none focus:text-orange-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
+                  />
+                  <span className="text-[10px] font-bold text-slate-500 uppercase">jours</span>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <input 
-                  type="number"
-                  value={initialCpBalance}
-                  onChange={(e) => setInitialCpBalance(Number(e.target.value))}
-                  className={`bg-transparent text-sm font-black text-right w-12 outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
-                />
-                <span className="text-xs font-bold text-slate-500">j</span>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setCpCalculationMode?.('25')}
+                  className={`py-3 rounded-[20px] font-black text-[10px] uppercase tracking-widest transition-all border ${
+                    cpCalculationMode === '25' 
+                      ? 'bg-orange-600 text-white border-orange-600 shadow-lg shadow-orange-600/20' 
+                      : (darkMode ? 'bg-slate-950/40 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50')
+                  }`}
+                >
+                  Ouvrés (25/an)
+                </button>
+                <button
+                  onClick={() => setCpCalculationMode?.('30')}
+                  className={`py-3 rounded-[20px] font-black text-[10px] uppercase tracking-widest transition-all border ${
+                    cpCalculationMode === '30' 
+                      ? 'bg-orange-600 text-white border-orange-600 shadow-lg shadow-orange-600/20' 
+                      : (darkMode ? 'bg-slate-950/40 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50')
+                  }`}
+                >
+                  Ouvrables (30/an)
+                </button>
               </div>
             </div>
 
             {/* Missions Complémentaires */}
-            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-slate-500/5 border border-white/5">
-              <div className="flex items-center justify-between">
+            <div className={`flex flex-col gap-4 p-5 rounded-[28px] border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
+              <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-3">
-                  <Award size={16} className="text-amber-500" />
-                  <span className="text-xs font-black uppercase tracking-widest text-slate-400">Mission Complém.</span>
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-amber-500/10' : 'bg-amber-50'}`}>
+                    <Award size={16} className="text-amber-500" />
+                  </div>
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Mission Complém.</span>
                 </div>
-                <select 
-                  value={supplementaryTaskType}
-                  onChange={(e) => setSupplementaryTaskType?.(e.target.value as any)}
-                  className={`bg-transparent text-sm font-black text-right outline-none focus:text-indigo-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
-                >
-                  <option value="none">Aucune</option>
-                  <option value="type_1">Type 1 (+2%)</option>
-                  <option value="type_2">Type 2 (+5%)</option>
-                  <option value="type_3">Type 3 (+10%)</option>
-                </select>
               </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: 'none', label: 'Aucune' },
+                  { id: 'type_1', label: 'Type 1 (+2%)' },
+                  { id: 'type_2', label: 'Type 2 (+5%)' },
+                  { id: 'type_3', label: 'Type 3 (+10%)' }
+                ].map(type => (
+                  <button
+                    key={type.id}
+                    onClick={() => setSupplementaryTaskType?.(type.id as any)}
+                    className={`py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all border ${
+                      supplementaryTaskType === type.id 
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/20' 
+                        : (darkMode ? 'bg-slate-950/40 border-white/5 text-slate-500 hover:text-slate-300' : 'bg-white border-slate-100 text-slate-500 hover:bg-slate-50')
+                    }`}
+                  >
+                    {type.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Taux majoré Mission - Imbriqué */}
               {supplementaryTaskType !== 'none' && (
-                <div className="pt-2 border-t border-white/5 flex justify-between items-center">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Bonus appliqué</span>
-                  <span className="text-[10px] font-black text-emerald-500">
-                    {supplementaryTaskType === 'type_1' ? '+2%' : supplementaryTaskType === 'type_2' ? '+5%' : '+10%'}
-                  </span>
+                <div className={`mt-2 p-4 rounded-2xl border backdrop-blur-md ${
+                  darkMode ? 'bg-emerald-500/5 border-emerald-500/10' : 'bg-emerald-500/5 border-white shadow-sm'
+                }`}>
+                  <div className="flex justify-between items-center">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Majoration Mission</span>
+                      <span className="text-[8px] font-bold text-emerald-500/60 uppercase tracking-widest mt-0.5 italic leading-none">
+                        {supplementaryTaskType === 'type_1' ? 'Conduite non sanitaire, corps...' : supplementaryTaskType === 'type_2' ? 'Taxi, Funéraire...' : 'Régulation, Mécanique...'}
+                      </span>
+                    </div>
+                    <span className="text-sm font-black text-emerald-500">
+                      {(parseFloat(hourlyRate || '0') * (1 + (supplementaryTaskType === 'type_1' ? 0.02 : supplementaryTaskType === 'type_2' ? 0.05 : 0.10))).toFixed(2)} €/h
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="space-y-2">
-            <div className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/10">
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Majoration Ancienneté ({seniorityBonus})</span>
-                <span className="text-sm font-black text-indigo-400">{effectiveHourlyRate} €/h</span>
+            {/* Majoration Ancienneté - Conditionnelle */}
+            {seniorityInfo?.bonus && seniorityInfo.bonus > 0 ? (
+              <div className={`p-4 rounded-2xl border backdrop-blur-md ${
+                darkMode ? 'bg-indigo-500/5 border-indigo-500/10' : 'bg-indigo-500/5 border-white shadow-sm'
+              }`}>
+                <div className="flex justify-between items-center">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Majoration Ancienneté</span>
+                    <span className="text-[8px] font-bold text-indigo-500/60 uppercase tracking-widest mt-0.5">
+                      {seniorityText} • Taux appliqué: +{(seniorityInfo.bonus * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <span className="text-sm font-black text-indigo-400">
+                    {(parseFloat(hourlyRate || '0') * (1 + seniorityInfo.bonus)).toFixed(2)} €/h
+                  </span>
+                </div>
               </div>
-            </div>
-            {supplementaryTaskType !== 'none' && (
-               <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/10">
-                 <div className="flex justify-between items-center">
-                   <div className="flex flex-col">
-                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Bonus Mission Complém.</span>
-                     <span className="text-[8px] font-bold text-slate-500 uppercase tracking-widest italic leading-none mt-0.5">
-                       {supplementaryTaskType === 'type_1' ? 'Conduite non sanitaire, corps...' : supplementaryTaskType === 'type_2' ? 'Taxi, Funéraire...' : 'Régulation, Mécanique...'}
-                     </span>
-                   </div>
-                   <span className="text-sm font-black text-emerald-500">
-                     +{supplementaryTaskType === 'type_1' ? '2' : supplementaryTaskType === 'type_2' ? '5' : '10'} %
-                   </span>
-                 </div>
-               </div>
+            ) : null}
+
+            {/* Taux Horaire Final Récapitulatif - Toujours visible si majorations actives */}
+            {( (seniorityInfo?.bonus && seniorityInfo.bonus > 0) || (supplementaryTaskType !== 'none') ) && (
+              <div className={`p-5 rounded-3xl border-2 shadow-lg backdrop-blur-md ${
+                darkMode ? 'bg-indigo-500/5 border-indigo-500/20 shadow-indigo-500/5' : 'bg-white/90 border-white'
+              }`}>
+                <div className="flex justify-between items-center">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1">Taux Horaire Final</span>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest leading-tight max-w-[180px]">
+                      Cumul : base + {( ((seniorityInfo?.bonus || 0) + (supplementaryTaskType === 'type_1' ? 0.02 : supplementaryTaskType === 'type_2' ? 0.05 : supplementaryTaskType === 'type_3' ? 0.10 : 0)) * 100).toFixed(0)}% de majorations
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-xl font-black text-indigo-500">
+                      {effectiveHourlyRate}
+                    </span>
+                    <span className="text-[10px] font-black text-indigo-500 opacity-60">€/h</span>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -720,30 +914,32 @@ export default function ProfileTab({
               </button>
             </div>
 
-            {!followSystemTheme && (
-              <div className={`flex p-1 rounded-2xl gap-1 animate-fadeIn ${darkMode ? 'bg-slate-800' : 'bg-slate-100'}`}>
-                <button 
-                  onClick={() => setThemeChoice('light')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-black transition-all ${
-                    themeChoice === 'light' 
-                      ? (darkMode ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm') 
-                      : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-700')
-                  }`}
-                >
-                  <Sun size={14} /> Clair
-                </button>
-                <button 
-                  onClick={() => setThemeChoice('dark')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-black transition-all ${
-                    themeChoice === 'dark' 
-                      ? (darkMode ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm') 
-                      : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-700')
-                  }`}
-                >
-                  <Moon size={14} /> Sombre
-                </button>
-              </div>
-            )}
+          {!followSystemTheme && (
+            <div className={`flex p-1.5 rounded-2xl gap-1 animate-fadeIn border ${
+              darkMode ? 'bg-slate-800 border-white/5' : 'bg-white/80 border-white/50 shadow-inner'
+            }`}>
+              <button 
+                onClick={() => setThemeChoice('light')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                  themeChoice === 'light' 
+                    ? (darkMode ? 'bg-indigo-600 text-white' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-200') 
+                    : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-400 hover:text-slate-600')
+                }`}
+              >
+                <Sun size={14} /> Clair
+              </button>
+              <button 
+                onClick={() => setThemeChoice('dark')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                  themeChoice === 'dark' 
+                    ? (darkMode ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm') 
+                    : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-400 hover:text-slate-600')
+                }`}
+              >
+                <Moon size={14} /> Sombre
+              </button>
+            </div>
+          )}
           </div>
 
           <div className="flex items-center justify-between">
@@ -798,12 +994,14 @@ export default function ProfileTab({
       <div className="space-y-4">
         <button 
           onClick={onLogout} 
-          className="w-full p-6 rounded-[28px] bg-slate-900 border border-white/5 flex items-center justify-center gap-4 group active:scale-[0.98] transition-all shadow-xl"
+          className={`w-full p-6 rounded-[32px] border flex items-center justify-center gap-4 group active:scale-[0.98] transition-all shadow-xl backdrop-blur-xl ${
+            darkMode ? 'bg-slate-900 border-white/5' : 'bg-white/80 border-white/40'
+          }`}
         >
           <div className="p-2 rounded-xl bg-rose-500/10 text-rose-500 group-hover:bg-rose-500 group-hover:text-white transition-all">
             <LogOut size={20} />
           </div>
-          <span className="font-black uppercase tracking-[0.2em] text-[11px] text-slate-200">Se déconnecter</span>
+          <span className={`font-black uppercase tracking-[0.2em] text-[11px] ${darkMode ? 'text-slate-200' : 'text-slate-600'}`}>Se déconnecter</span>
         </button>
       </div>
     </div>

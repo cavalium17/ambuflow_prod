@@ -18,6 +18,7 @@ import {
   BellRing, 
   Building2, 
   Car, 
+  Percent,
   Briefcase, 
   Stethoscope, 
   Users, 
@@ -29,6 +30,7 @@ import {
   Activity,
   Clock,
   Zap,
+  Trash,
   Lock,
   TrendingUp,
   AlertTriangle,
@@ -50,26 +52,156 @@ import {
   Star,
   Loader2,
   Ambulance,
-  Check
+  Check,
+  HeartHandshake
 } from 'lucide-react';
 import { ServiceStatus, ActivityLog, AppTab, Shift, Break, UserStats, UserRole, UserProfile, PushNotification as PushType } from './types';
-import { getLocalDateString, getFrenchPublicHolidays, isSundayOrHoliday, calculateTotalDurationMinutes } from './src/lib/dateUtils';
+import { getLocalDateString, getFrenchPublicHolidays, isSundayOrHoliday, calculateTotalDurationMinutes, parseLocalDate } from './src/lib/dateUtils';
 import Logo from './components/Logo';
-import PlanningTab from './components/PlanningTab';
 import PaieTab from './components/PaieTab';
+import { PlanningTab } from './components/PlanningTab';
 import ProfileTab from './components/ProfileTab';
 import Navigation from './components/Navigation';
+import SplashScreen from './components/SplashScreen';
 import NotificationHistory from './components/NotificationHistory';
 import PushNotification from './components/PushNotification';
 import DailyRecap from './components/DailyRecap';
-import Onboarding from './components/Onboarding';
 import Login from './components/Login';
 import { auth, db } from './src/firebaseConfig';
 import { onAuthStateChanged, User as FirebaseUser, signOut, deleteUser, reauthenticateWithPopup, GoogleAuthProvider, EmailAuthProvider } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, writeBatch, disableNetwork, enableNetwork } from 'firebase/firestore';
 import { requestNotificationPermissions, requestLocationPermissions, setupNotificationChannels } from './services/notificationManager';
 import { requestForToken, onMessageListener } from './src/firebaseConfig';
 import { handleFirestoreError, OperationType } from './src/services/firestoreErrorHandler';
+import { getFiveNearbyRestaurants, RestaurantSuggestion } from './services/restaurantService';
+
+const isSameWeek = (d1: Date, d2: Date): boolean => {
+  const getStartOfWeek = (d: Date) => {
+    const temp = new Date(d);
+    const day = temp.getDay();
+    const diff = temp.getDate() - day + (day === 0 ? -6 : 1);
+    temp.setDate(diff);
+    temp.setHours(0, 0, 0, 0);
+    return temp.getTime();
+  };
+  return getStartOfWeek(d1) === getStartOfWeek(d2);
+};
+
+const isWithinCustomModulationPeriod = (
+  targetDate: Date,
+  referenceStartDate: Date,
+  cycleWeeks: number,
+  currentDate: Date
+): { isInPeriod: boolean; startOfCycle: Date; endOfCycle: Date } => {
+  const ref = new Date(referenceStartDate);
+  ref.setHours(0, 0, 0, 0);
+  const curr = new Date(currentDate);
+  curr.setHours(0, 0, 0, 0);
+
+  const diffDays = Math.round((curr.getTime() - ref.getTime()) / (24 * 60 * 60 * 1000));
+  const totalDaysInCycle = cycleWeeks * 7;
+  const currentCycleIndex = Math.floor(diffDays / totalDaysInCycle);
+
+  const startOfCycle = new Date(ref);
+  startOfCycle.setDate(ref.getDate() + (currentCycleIndex * totalDaysInCycle));
+  startOfCycle.setHours(0, 0, 0, 0);
+
+  const endOfCycle = new Date(startOfCycle);
+  endOfCycle.setDate(startOfCycle.getDate() + totalDaysInCycle);
+  endOfCycle.setHours(0, 0, 0, 0);
+
+  const targetNormalized = new Date(targetDate);
+  targetNormalized.setHours(0, 0, 0, 0);
+
+  const isInPeriod = targetNormalized >= startOfCycle && targetNormalized < endOfCycle;
+  return { isInPeriod, startOfCycle, endOfCycle };
+};
+
+const getShiftMinutes = (
+  shift: any,
+  activeShiftId?: string | null,
+  status?: string,
+  currentTime?: Date
+): number => {
+  if (!shift) return 0;
+  // Règle d'or : Si c'est un congé ou un férié chômé, c'est 7h00 (420 min) d'office, peu importe les horaires inscrits
+  if (
+    shift.isCP === true ||
+    shift.isCP === 'true' ||
+    shift.type === 'CP' ||
+    shift.absenceType === 'CP' ||
+    shift.leaveType === 'CP' ||
+    (shift.isLeave && shift.leaveType === 'CP') ||
+    shift.isFerieChome === true ||
+    shift.isFerieChome === 'true' ||
+    shift.type === 'FERIE' ||
+    shift.minutesForced === 420
+  ) {
+    return 420;
+  }
+  if (shift.isLeave || shift.vehicle === 'CONGÉ' || shift.isConge) return 0;
+  if (!shift.start || shift.start === '--:--' || !shift.day) return 0;
+
+  const [h1, m1] = shift.start.split(':').map((v: string) => parseInt(v, 10) || 0);
+  const validH1 = isNaN(h1) ? 0 : h1;
+  const validM1 = isNaN(m1) ? 0 : m1;
+
+  let endH: number;
+  let endM: number;
+  
+  const isCurrentlyInBreak = activeShiftId && shift.id === activeShiftId && status === 'BREAK';
+  const lastBreak = isCurrentlyInBreak && shift.breaks && shift.breaks.length > 0 
+    ? shift.breaks[shift.breaks.length - 1] 
+    : null;
+
+  if (shift.end !== '--:--' && shift.end !== '') {
+    const [h2, m2] = shift.end.split(':').map((v: string) => parseInt(v, 10) || 0);
+    endH = h2;
+    endM = m2;
+  } else if (activeShiftId && shift.id === activeShiftId && currentTime) {
+    if (isCurrentlyInBreak && lastBreak) {
+      const [hb, mb] = lastBreak.start.split(':').map((v: string) => parseInt(v, 10) || 0);
+      endH = hb;
+      endM = mb;
+    } else {
+      endH = currentTime.getHours();
+      endM = currentTime.getMinutes();
+    }
+  } else {
+    return 0;
+  }
+
+  const validEndH = isNaN(endH) ? 0 : endH;
+  const validEndM = isNaN(endM) ? 0 : endM;
+
+  // Split and recreate dates
+  const [year, month, day] = shift.day.split('-').map(Number);
+  const startDate = new Date(year, month - 1, day, validH1, validM1, 0, 0);
+  let endDate = new Date(year, month - 1, day, validEndH, validEndM, 0, 0);
+
+  // Overnight shift rollover detection
+  if (endDate.getTime() < startDate.getTime()) {
+    endDate = new Date(year, month - 1, day + 1, validEndH, validEndM, 0, 0);
+  }
+
+  // Pilier 2: Millisecond-level exact calculation translated into minutes
+  let durationMs = endDate.getTime() - startDate.getTime();
+
+  if (shift.breaks) {
+    shift.breaks.forEach((b: any) => { 
+      if (b.end !== '--:--' && b.id !== lastBreak?.id) {
+        const rawDur = Number(b.duration) || 0;
+        // Rule 4: Café (min 20m, max 90m). Rule 5: Coupure Repas (min 30m, max 90m)
+        const accountedDur = b.isMeal 
+          ? Math.max(30, Math.min(90, rawDur))
+          : Math.max(20, Math.min(90, rawDur));
+        durationMs -= accountedDur * 60000; 
+      }
+    });
+  }
+
+  return Math.max(0, Math.floor(durationMs / 60000));
+};
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -153,8 +285,22 @@ const sanitizeData = (data: any): any => {
 };
 
 const App: React.FC = () => {
+  // --- AUTH BYPASS FOR DEV (Commented for future use) ---
+  const isDevBypass = false; 
+  /* 
+  const isDevBypassActive = window.location.hostname === 'localhost' || 
+                            window.location.hostname === '127.0.0.1' || 
+                            window.location.hostname.includes('ais-dev-') || 
+                            window.location.hostname.includes('ais-pre-');
+  */
+
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  // const [user, setUser] = useState<any>(isDevBypass ? { uid: 'admin', email: 'dev@test.fr', displayName: 'Admin Dev' } : null);
+  // const [authLoading, setAuthLoading] = useState(!isDevBypass);
+  // const [isAuthReady, setIsAuthReady] = useState(isDevBypass);
+  
   const [currentTime, setCurrentTime] = useState(new Date());
   const [notifications, setNotifications] = useState<PushType[]>(() => {
     const saved = localStorage.getItem('ambuflow_notifications');
@@ -175,8 +321,8 @@ const App: React.FC = () => {
   
   const [configLoading, setConfigLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<AppTab>('home');
-  const [isAuthReady, setIsAuthReady] = useState(false);
   const [isGuest, setIsGuest] = useState(() => localStorage.getItem('ambuflow_is_guest') === 'true');
+  const [showSplash, setShowSplash] = useState(false);
   const [showLoadingLonger, setShowLoadingLonger] = useState(false);
 
   const [carouselIndex, setCarouselIndex] = useState(0);
@@ -208,9 +354,61 @@ const App: React.FC = () => {
   const [pushEnabled, setPushEnabled] = useState(true);
   const [currentGeoPosition, setCurrentGeoPosition] = useState<{ latitude: number; longitude: number; } | null>(null);
   const [shifts, setShifts] = useState<Shift[]>(() => {
+    if (!localStorage.getItem('ambuflow_shifts_cleared_v2')) {
+      localStorage.setItem('ambuflow_shifts', '[]');
+      const savedConfig = localStorage.getItem('ambuflow_config');
+      if (savedConfig) {
+        try {
+          const config = JSON.parse(savedConfig);
+          config.shifts = [];
+          localStorage.setItem('ambuflow_config', JSON.stringify(config));
+        } catch (e) {
+          console.error("Error clearing cached shifts in config:", e);
+        }
+      }
+      return [];
+    }
     const saved = localStorage.getItem('ambuflow_shifts');
     return saved ? JSON.parse(saved) : [];
   });
+
+  // Force one-time clear of of all shifts as requested by the user
+  useEffect(() => {
+    const cleared = localStorage.getItem('ambuflow_shifts_cleared_v2');
+    if (!cleared) {
+      setShifts([]);
+      localStorage.setItem('ambuflow_shifts', '[]');
+      localStorage.setItem('ambuflow_shifts_cleared_v2', 'true');
+      console.log("Programmatically cleared all shifts as requested by the user.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!shifts || shifts.length === 0) return;
+
+    let modificationDetectee = false;
+    const shiftsModifies = shifts.map(s => {
+      // Si la ligne est marquée comme CP ou FERIE mais que ses minutes valent 0 ou ne sont pas forcées
+      if ((s.isCP === true || s.type === 'CP' || s.isFerieChome === true || s.type === 'FERIE') && s.minutesForced !== 420) {
+        modificationDetectee = true;
+        return {
+          ...s,
+          minutesForced: 420,
+          amplitude: 420,
+          TTE: 420,
+          heureEmbauche: "07:00",
+          heureFin: "14:00" // On simule une plage de 7h pour forcer les calculs récalcitrants
+        };
+      }
+      return s;
+    });
+
+    if (modificationDetectee) {
+      // On écrase le state local pour forcer l'application à ingérer les 7h
+      setShifts(shiftsModifies);
+    }
+  }, [shifts]);
+
   const [activeShiftId, setActiveShiftId] = useState<string | null>(() => {
     return localStorage.getItem('ambuflow_active_shift_id');
   });
@@ -252,33 +450,42 @@ const App: React.FC = () => {
   const [lastCpAccrualDate, setLastCpAccrualDate] = useState<string>("");
   const [customHours, setCustomHours] = useState("");
   const [weekendDays, setWeekendDays] = useState<string[]>([]);
+  const [heureEmbauchePrevue, setHeureEmbauchePrevue] = useState<string>(() => {
+    return localStorage.getItem('ambuflow_heure_embauche_prevue') || "06:30";
+  });
+  const [soldeTotalCP, setSoldeTotalCP] = useState<number>(() => {
+    const saved = localStorage.getItem('ambuflow_solde_total_cp');
+    return saved !== null ? parseFloat(saved) : 25;
+  });
+  const [joursCPPrisCycle, setJoursCPPrisCycle] = useState<number>(() => {
+    const saved = localStorage.getItem('ambuflow_jours_cp_pris_cycle');
+    return saved !== null ? parseInt(saved, 10) : 0;
+  });
   const [followSystemTheme, setFollowSystemTheme] = useState(true);
   const [themeChoice, setThemeChoice] = useState<'light' | 'dark'>('dark');
-  const [onboarded, setOnboarded] = useState<boolean>(() => {
-    // Priority: check if we just requested a reset
-    if (localStorage.getItem('onboarding_requested') === 'true') return false;
-    
-    const saved = localStorage.getItem('ambuflow_config');
-    if (saved) {
-      try {
-        const config = JSON.parse(saved);
-        return config.onboarded === true;
-      } catch (e) { return false; }
-    }
-    return false;
-  });
+  const [onboarded, setOnboarded] = useState<boolean>(true);
   const [roles, setRoles] = useState<UserRole[]>([]);
   const [primaryRole, setPrimaryRole] = useState<UserRole | ''>('');
   const [weeklyContractHours, setWeeklyContractHours] = useState(35);
   const [overtimeMode, setOvertimeMode] = useState<'weekly' | 'biweekly' | 'modulation' | 'annualized'>('weekly');
   const [payRateMode, setPayRateMode] = useState<'100_percent' | '90_percent'>('100_percent');
   const [supplementaryTaskType, setSupplementaryTaskType] = useState<'none' | 'type_1' | 'type_2' | 'type_3'>('none');
+  const [vehicleStatMode, setVehicleStatMode] = useState<'percent' | 'hours'>('percent');
 
   // Missing States
   const [status, setStatus] = useState<ServiceStatus>(() => {
     const saved = localStorage.getItem('ambuflow_status');
     return (saved as ServiceStatus) || ServiceStatus.OFF;
   });
+  const [dailyMinutes, setDailyMinutes] = useState(0);
+  const [breakMinutes, setBreakMinutes] = useState(0);
+  const [isOnBreak, setIsOnBreak] = useState(false);
+  const serviceStatus = status;
+  const setServiceStatus = (s: ServiceStatus | 'OFF') => {
+    setStatus(s === 'OFF' ? ServiceStatus.OFF : s as ServiceStatus);
+  };
+  const [currentShift, setCurrentShift] = useState<Shift | null>(null);
+  const [breaks, setBreaks] = useState<any[]>([]);
   const [logs, setLogs] = useState<ActivityLog[]>(() => {
     const saved = localStorage.getItem('ambuflow_logs');
     return saved ? JSON.parse(saved) : [];
@@ -292,6 +499,16 @@ const App: React.FC = () => {
   const [breakStartTime, setBreakStartTime] = useState("");
   const [breakDuration, setBreakDuration] = useState(30);
   const [breakLocation, setBreakLocation] = useState<'Entreprise' | 'Extérieur'>('Entreprise');
+
+  
+  // Nouveaux états demandés pour la pop-up de repas
+  const [modeTransport, setModeTransport] = useState<'A_PIED' | 'EN_VOITURE'>('A_PIED');
+  const [maxDuration, setMaxDuration] = useState<number>(5);
+  const [restaurants, setRestaurants] = useState<RestaurantSuggestion[]>([]);
+  const [suggestedRestaurants, setSuggestedRestaurants] = useState<RestaurantSuggestion[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [searchLoading, setSearchLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
   const [breakStartDateTime, setBreakStartDateTime] = useState<Date | null>(() => {
     const saved = localStorage.getItem('ambuflow_break_start_datetime');
     return saved ? new Date(saved) : null;
@@ -304,9 +521,27 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('ambuflow_next_autostart');
     return saved ? new Date(saved) : null;
   });
+  const [dismissedShiftIds, setDismissedShiftIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambuflow_dismissed_shift_ids');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ambuflow_dismissed_shift_ids', JSON.stringify(dismissedShiftIds));
+  }, [dismissedShiftIds]);
   const [prefersDarkMode, setPrefersDarkMode] = useState(false);
-  const [showVehicleModal, setShowVehicleModal] = useState(false);
+  const [showCancelDayModal, setShowCancelDayModal] = useState(false);
   const [selectedVehicleType, setSelectedVehicleType] = useState('ASSU');
+  const [isQuotaExceeded, setIsQuotaExceeded] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return !!(window as any).firestoreQuotaExceeded || localStorage.getItem('firestore_quota_exceeded') === 'true';
+    }
+    return false;
+  });
 
   const addNotification = useCallback((title: string, message: string, type: 'info' | 'success' | 'warning') => {
     const newNotif: PushType = {
@@ -319,6 +554,60 @@ const App: React.FC = () => {
     };
     setNotifications(prev => [newNotif, ...prev].slice(0, 50));
   }, []);
+
+  const handleAdjustCPDays = useCallback((increment: boolean) => {
+    if (increment) {
+      setJoursCPPrisCycle(prev => {
+        const next = prev + 1;
+        localStorage.setItem('ambuflow_jours_cp_pris_cycle', String(next));
+        return next;
+      });
+      setSoldeTotalCP(prev => {
+        const next = Math.max(0, prev - 1);
+        localStorage.setItem('ambuflow_solde_total_cp', String(next));
+        return next;
+      });
+      addNotification("CONGÉ PAYÉ SELECTIONNÉ", "1 jour déduit de votre solde CP et +7h00 ajoutés au cumul de modulation.", "info");
+    } else {
+      setJoursCPPrisCycle(prev => {
+        if (prev <= 0) return prev;
+        const next = prev - 1;
+        localStorage.setItem('ambuflow_jours_cp_pris_cycle', String(next));
+        return next;
+      });
+      setSoldeTotalCP(prev => {
+        const next = prev + 1;
+        localStorage.setItem('ambuflow_solde_total_cp', String(next));
+        return next;
+      });
+      addNotification("CONGÉ PAYÉ RETIRÉ", "1 jour rajouté à votre solde CP et -7h00 retirés de la modulation.", "info");
+    }
+  }, [addNotification]);
+
+  useEffect(() => {
+    const handleQuotaExceeded = () => {
+      setIsQuotaExceeded(true);
+      const lastNotified = sessionStorage.getItem('quota_notification_sent');
+      if (!lastNotified) {
+        addNotification(
+          "CONSTATS CLOUD / HORS-LIGNE",
+          "Le quota d'hébergement est épuisé. L'application bascule automatiquement en mode local/hors-ligne. Vos données sont préservées !",
+          "warning"
+        );
+        sessionStorage.setItem('quota_notification_sent', 'true');
+      }
+    };
+
+    window.addEventListener('firestore-quota-exceeded', handleQuotaExceeded);
+    
+    if ((window as any).firestoreQuotaExceeded) {
+      handleQuotaExceeded();
+    }
+
+    return () => {
+      window.removeEventListener('firestore-quota-exceeded', handleQuotaExceeded);
+    };
+  }, [addNotification]);
 
   const applyConfig = useCallback((config: any) => {
     if (config.userName !== undefined) setUserName(prev => prev !== config.userName ? config.userName : prev);
@@ -366,12 +655,17 @@ const App: React.FC = () => {
     if (config.followSystemTheme !== undefined) setFollowSystemTheme(prev => prev !== config.followSystemTheme ? config.followSystemTheme : prev);
     if (config.themeChoice !== undefined) setThemeChoice(prev => prev !== config.themeChoice ? config.themeChoice : prev);
     if (config.onboarded !== undefined) {
-      // If we just requested a reset, ignore any 'true' value from Firestore/cache until onboarding is complete again
-      if (localStorage.getItem('onboarding_requested') === 'true' && config.onboarded === true) {
-        return;
-      }
       setOnboarded(config.onboarded);
     }
+    if (config.heureEmbauchePrevue !== undefined) setHeureEmbauchePrevue(prev => prev !== config.heureEmbauchePrevue ? config.heureEmbauchePrevue : prev);
+    if (config.soldeTotalCP !== undefined) setSoldeTotalCP(prev => {
+      const val = parseFloat(config.soldeTotalCP ?? "25");
+      return prev !== val ? val : prev;
+    });
+    if (config.joursCPPrisCycle !== undefined) setJoursCPPrisCycle(prev => {
+      const val = parseInt(config.joursCPPrisCycle ?? "0", 10);
+      return prev !== val ? val : prev;
+    });
     if (config.roles !== undefined) setRoles(prev => JSON.stringify(prev) !== JSON.stringify(config.roles) ? config.roles : prev);
     if (config.primaryRole !== undefined) setPrimaryRole(prev => prev !== config.primaryRole ? config.primaryRole : prev);
     if (config.weeklyContractHours !== undefined) setWeeklyContractHours(prev => prev !== config.weeklyContractHours ? config.weeklyContractHours : prev);
@@ -381,10 +675,26 @@ const App: React.FC = () => {
     if (config.status !== undefined) setStatus(prev => prev !== config.status ? config.status : prev);
     if (config.activeShiftId !== undefined) setActiveShiftId(prev => prev !== config.activeShiftId ? config.activeShiftId : prev);
     if (config.scheduledShiftId !== undefined) setScheduledShiftId(prev => prev !== config.scheduledShiftId ? config.scheduledShiftId : prev);
-    if (config.nextAutoStart !== undefined) setNextAutoStart(config.nextAutoStart ? new Date(config.nextAutoStart) : null);
-    if (config.breakStartDateTime !== undefined) setBreakStartDateTime(config.breakStartDateTime ? new Date(config.breakStartDateTime) : null);
-    if (config.breakEndTimeActual !== undefined) setBreakEndTimeActual(config.breakEndTimeActual ? new Date(config.breakEndTimeActual) : null);
-    if (config.shifts !== undefined) setShifts(prev => JSON.stringify(prev) !== JSON.stringify(config.shifts) ? config.shifts : prev);
+    if (config.nextAutoStart !== undefined) setNextAutoStart(prev => {
+      if (!prev && !config.nextAutoStart) return prev;
+      if (prev && config.nextAutoStart && prev.getTime() === new Date(config.nextAutoStart).getTime()) return prev;
+      return config.nextAutoStart ? new Date(config.nextAutoStart) : null;
+    });
+    if (config.breakStartDateTime !== undefined) setBreakStartDateTime(prev => {
+      if (!prev && !config.breakStartDateTime) return prev;
+      if (prev && config.breakStartDateTime && prev.getTime() === new Date(config.breakStartDateTime).getTime()) return prev;
+      return config.breakStartDateTime ? new Date(config.breakStartDateTime) : null;
+    });
+    if (config.breakEndTimeActual !== undefined) setBreakEndTimeActual(prev => {
+      if (!prev && !config.breakEndTimeActual) return prev;
+      if (prev && config.breakEndTimeActual && prev.getTime() === new Date(config.breakEndTimeActual).getTime()) return prev;
+      return config.breakEndTimeActual ? new Date(config.breakEndTimeActual) : null;
+    });
+    if (config.shifts !== undefined) {
+      const isClearedV2 = localStorage.getItem('ambuflow_shifts_cleared_v2') === 'true';
+      const targetShifts = isClearedV2 ? config.shifts : [];
+      setShifts(prev => JSON.stringify(prev) !== JSON.stringify(targetShifts) ? targetShifts : prev);
+    }
     if (config.logs !== undefined) setLogs(prev => JSON.stringify(prev) !== JSON.stringify(config.logs) ? config.logs : prev);
     if (config.notifications !== undefined) setNotifications(prev => {
       const remoteNotifs = (config.notifications as any[])
@@ -445,6 +755,16 @@ const App: React.FC = () => {
     let loadingTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      // --- AUTH BYPASS FOR DEV (START) ---
+      if (isDevBypass) {
+        console.log("Auth Bypass Active (Currently Disabled). Skipping onAuthStateChanged logic.");
+        setIsAuthReady(true);
+        setAuthLoading(false);
+        setConfigLoading(false);
+        return;
+      }
+      // --- AUTH BYPASS FOR DEV (END) ---
+
       console.log("Auth state changed. User:", currentUser?.uid);
       
       // Safety timeout to unblock UI if Firebase hangs
@@ -504,11 +824,27 @@ const App: React.FC = () => {
         }, (error) => {
           if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
           console.error("Firestore onSnapshot error:", error);
-          // Check if we still have a user session when the error occurs
-          if (auth.currentUser) {
-             handleFirestoreError(error, OperationType.GET, userDocPath);
+          
+          const errorMsg = error.message?.toLowerCase() || '';
+          const isQuota = errorMsg.includes('quota') || errorMsg.includes('resource-exhausted') || errorMsg.includes('resource_exhausted') || errorMsg.includes('exhausted');
+          if (isQuota) {
+            console.warn("Quota limit exceeded detected in onSnapshot sync. Unsubscribing client to prevent retry storm.");
+            disableNetwork(db).catch(err => console.error("Could not disable network:", err));
+            if (unsubscribeSnapshot) {
+              unsubscribeSnapshot();
+              unsubscribeSnapshot = null;
+            }
+            (window as any).firestoreQuotaExceeded = true;
+            window.dispatchEvent(new CustomEvent('firestore-quota-exceeded', { 
+              detail: { error: error.message, operationType: OperationType.GET, path: userDocPath } 
+            }));
           } else {
-             console.warn("Permission error occurred but session was lost. Ignoring.");
+            // Check if we still have a user session when the error occurs
+            if (auth.currentUser) {
+               handleFirestoreError(error, OperationType.GET, userDocPath);
+            } else {
+               console.warn("Permission error occurred but session was lost. Ignoring.");
+            }
           }
           setAuthLoading(false);
           setConfigLoading(false);
@@ -570,6 +906,9 @@ const App: React.FC = () => {
       followSystemTheme,
       themeChoice,
       onboarded,
+      heureEmbauchePrevue,
+      soldeTotalCP,
+      joursCPPrisCycle,
       roles,
       primaryRole,
       weeklyContractHours,
@@ -591,7 +930,9 @@ const App: React.FC = () => {
       updatedAt: new Date().toISOString()
     };
     
-    const configStr = JSON.stringify(config);
+    // Extract updatedAt before stringifying for duplicate detection
+    const { updatedAt: _updatedAt, ...configFieldsOnly } = config;
+    const configStr = JSON.stringify(configFieldsOnly);
     if (configStr === lastSavedConfigRef.current) return;
 
     lastSavedConfigRef.current = configStr;
@@ -600,7 +941,17 @@ const App: React.FC = () => {
     const { notifications: _, ...configToSave } = config;
     localStorage.setItem('ambuflow_config', JSON.stringify(configToSave));
     
-    if (!user) return;
+    // --- AUTH BYPASS FOR DEV Check ---
+    if (!user || (user as any).uid === 'admin') {
+       if (!user) return;
+       // Mock user 'admin' shouldn't sync to real Firestore
+       if ((user as any).uid === 'admin') return;
+    }
+
+    if ((window as any).firestoreQuotaExceeded) {
+       console.log("Firestore quota is exceeded. Skipping setDoc write option to prevent error storm.");
+       return;
+    }
 
     try {
       isSavingRef.current = true;
@@ -615,7 +966,7 @@ const App: React.FC = () => {
     } finally {
       isSavingRef.current = false;
     }
-  }, [user, userName, profileImage, jobTitle, hourlyRate, companyName, companyCity, firstName, lastName, qualifications, entryDate, workRegime, monthlyHours, leaveCalculation, autoGeo, hasDea, hasAux, hasTaxiCard, primaryGraduationDate, deaDate, auxDate, taxiDate, taxiCardExpiryDate, taxiFpcDate, afgsuDate, medicalExpiryDate, contractStartDate, contractType, hoursBase, cpCalculationMode, modulationStartDate, modulationWeeks, initialCpBalance, lastCpAccrualDate, customHours, weekendDays, pushEnabled, followSystemTheme, themeChoice, onboarded, roles, primaryRole, weeklyContractHours, overtimeMode, payRateMode, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications]);
+  }, [user, userName, profileImage, jobTitle, hourlyRate, companyName, companyCity, firstName, lastName, qualifications, entryDate, workRegime, monthlyHours, leaveCalculation, autoGeo, hasDea, hasAux, hasTaxiCard, primaryGraduationDate, deaDate, auxDate, taxiDate, taxiCardExpiryDate, taxiFpcDate, afgsuDate, medicalExpiryDate, contractStartDate, contractType, hoursBase, cpCalculationMode, modulationStartDate, modulationWeeks, initialCpBalance, lastCpAccrualDate, customHours, weekendDays, pushEnabled, followSystemTheme, themeChoice, onboarded, heureEmbauchePrevue, soldeTotalCP, joursCPPrisCycle, roles, primaryRole, weeklyContractHours, overtimeMode, payRateMode, supplementaryTaskType, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications]);
 
   useEffect(() => {
     if (user || isGuest) {
@@ -624,7 +975,7 @@ const App: React.FC = () => {
       }, 500); // Reduced debounce to 500ms for more reliable sync
       return () => clearTimeout(timeout);
     }
-  }, [user, isGuest, saveConfig, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications]);
+  }, [user, isGuest, saveConfig, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications, contractStartDate, hourlyRate, payRateMode, supplementaryTaskType, initialCpBalance, userName, companyName, jobTitle, heureEmbauchePrevue, soldeTotalCP, joursCPPrisCycle]);
 
   // Handle page visibility and unload for critical data saving
   useEffect(() => {
@@ -700,56 +1051,6 @@ const App: React.FC = () => {
       }
     }
   }, [currentTime, onboarded, lastCpAccrualDate, weeklyContractHours, cpCalculationMode, addNotification]);
-
-  const handleOnboardingComplete = useCallback((profile: Partial<UserProfile>) => {
-    if (profile.firstName) setFirstName(profile.firstName);
-    if (profile.lastName) setLastName(profile.lastName);
-    if (profile.companyName) setCompanyName(profile.companyName);
-    if (profile.roles) setRoles(profile.roles);
-    if (profile.primaryRole) setPrimaryRole(profile.primaryRole);
-    if (profile.contractType) setContractType(profile.contractType);
-    if (profile.hoursBase) setHoursBase(profile.hoursBase);
-    if (profile.contractStartDate) setContractStartDate(profile.contractStartDate);
-    if (profile.autoGeo !== undefined) setAutoGeo(profile.autoGeo);
-    if (profile.pushEnabled !== undefined) setPushEnabled(profile.pushEnabled);
-    if (profile.onboarded !== undefined) {
-      setOnboarded(profile.onboarded);
-      if (profile.onboarded === true) {
-        localStorage.removeItem('onboarding_requested');
-      }
-    }
-    if (profile.weeklyContractHours !== undefined) {
-      setWeeklyContractHours(profile.weeklyContractHours);
-      setHoursBase(String(profile.weeklyContractHours));
-    }
-    if (profile.overtimeMode !== undefined) {
-      setOvertimeMode(profile.overtimeMode);
-      // Map onboarding overtimeMode to internal workRegime
-      const modeMapping: Record<string, string> = {
-        'weekly': 'weekly',
-        'biweekly': 'fortnightly',
-        'modulation': 'modulation',
-        'annualized': 'annualization'
-      };
-      setWorkRegime(modeMapping[profile.overtimeMode] || 'weekly');
-    }
-    if (profile.modulationWeeks !== undefined) setModulationWeeks(String(profile.modulationWeeks));
-    if (profile.modulationStartDate !== undefined) setModulationStartDate(profile.modulationStartDate);
-    if (profile.payRateMode !== undefined) setPayRateMode(profile.payRateMode);
-    if (profile.supplementaryTaskType !== undefined) setSupplementaryTaskType(profile.supplementaryTaskType as any);
-    if (profile.initialCpBalance !== undefined) setInitialCpBalance(profile.initialCpBalance);
-    if (profile.hourlyRate !== undefined) setHourlyRate(String(profile.hourlyRate));
-    
-    // Initialize accrual date to avoid double crediting same month as onboarding
-    const currentMonth = `${currentTime.getFullYear()}-${String(currentTime.getMonth() + 1).padStart(2, '0')}`;
-    setLastCpAccrualDate(currentMonth);
-    
-    setUserName(`${profile.firstName || ''} ${profile.lastName || ''}`.trim());
-    
-    // Trigger save
-    setTimeout(() => saveConfig(), 500);
-  }, [saveConfig]);
-
   // Permissions et Notifications
   useEffect(() => {
     // Demande de permissions Notifications
@@ -899,6 +1200,17 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
+  const availableVehicles = useMemo(() => {
+    const v: string[] = [];
+    if (roles.includes('dea') || roles.includes('auxiliary')) {
+      v.push('ASSU', 'AMBU', 'VSL');
+    }
+    if (roles.includes('taxi')) {
+      v.push('TAXI');
+    }
+    return v.length > 0 ? v : ['ASSU', 'AMBU', 'VSL'];
+  }, [roles]);
+
   // Automatisation du cumul des CP (chaque 1er du mois) - Déjà géré dans checkMonthlyReport
 
   useEffect(() => {
@@ -915,18 +1227,52 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!autoGeo || !navigator.geolocation) return;
 
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        setCurrentGeoPosition({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude
-        });
-      },
-      (err) => console.error("Erreur géo:", err),
-      { enableHighAccuracy: true }
-    );
+    let watchId: number | null = null;
+    let usingFallback = false;
 
-    return () => navigator.geolocation.clearWatch(watchId);
+    const startWatching = (highAccuracy: boolean) => {
+      console.log(`Géolocalisation: Initialisation du suivi (Haute Précision: ${highAccuracy})...`);
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setCurrentGeoPosition({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude
+          });
+        },
+        (err) => {
+          console.warn(`Erreur de suivi GPS (Haute Précision: ${highAccuracy}):`, err.message, "Code:", err.code);
+          
+          if (highAccuracy && !usingFallback) {
+            console.log("Repli de suivi automatique: Passage en précision standard (Wi-Fi/Cellules) pour contourner la mauvaise réception...");
+            usingFallback = true;
+            if (watchId !== null) {
+              navigator.geolocation.clearWatch(watchId);
+              watchId = null;
+            }
+            startWatching(false);
+          } else {
+            if (err.code === 1 || err.message.includes('permission') || err.message.includes('policy')) {
+              console.warn("L'accès au suivi de position GPS est restreint ou désactivé par la politique de sécurité.");
+            } else {
+              console.warn("Suivi de position GPS indisponible actuellement :", err.message);
+            }
+          }
+        },
+        { 
+          enableHighAccuracy: highAccuracy,
+          timeout: highAccuracy ? 5000 : 15000,
+          maximumAge: 5000
+        }
+      );
+    };
+
+    startWatching(true);
+
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
   }, [autoGeo]);
 
   const addLog = useCallback((action: string, type: ActivityLog['type']) => {
@@ -944,15 +1290,114 @@ const App: React.FC = () => {
     setLogs(prev => [finalLog, ...prev]);
   }, [currentTime, autoGeo, currentGeoPosition]);
 
+  const handleSearchRestaurants = async () => {
+    setLoading(true);
+    setSearchLoading(true);
+    setError(null);
+    setRestaurants([]);
+    setSuggestedRestaurants([]);
+
+    const getGPSCoordinates = (): Promise<{ latitude: number; longitude: number }> => {
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error("La géolocalisation n'est pas supportée par ce navigateur."));
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            resolve({
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude
+            });
+          },
+          (err) => {
+            console.warn("Échec Tentative GPS Matériel (Haute Précision):", err.message);
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                resolve({
+                  latitude: pos.coords.latitude,
+                  longitude: pos.coords.longitude
+                });
+              },
+              (fallbackErr) => {
+                reject(new Error(`Impossible de récupérer votre position GPS (triangulation réseau échouée) : ${fallbackErr.message}`));
+              },
+              { enableHighAccuracy: false, timeout: 5000 }
+            );
+          },
+          { enableHighAccuracy: true, timeout: 5000 }
+        );
+      });
+    };
+
+    try {
+      let coords;
+      try {
+        coords = await getGPSCoordinates();
+      } catch (gpsError: any) {
+        console.warn("Échec de la récupération GPS pour la recherche des restaurants :", gpsError.message);
+        setError("Géolocalisation requise : Vrai GPS ou triangulation réseau indisponible. L'activation de la géolocalisation du smartphone/navigateur est obligatoire pour trouver de vrais restaurants réels à proximité.");
+        setLoading(false);
+        setSearchLoading(false);
+        return; // Échec GPS bloquant l'application pour empêcher toute recherche bidon ou erronée
+      }
+
+      console.log(`Recherche de restos avec coordinates réelles: Lat ${coords.latitude}, Lng ${coords.longitude}, Véhicule: ${selectedVehicleType}`);
+      const results = await getFiveNearbyRestaurants(
+        selectedVehicleType,
+        coords.latitude,
+        coords.longitude,
+        modeTransport,
+        maxDuration
+      );
+
+      if (results && results.length > 0) {
+        setRestaurants(results);
+        setSuggestedRestaurants(results);
+      } else {
+        setRestaurants([]);
+        setSuggestedRestaurants([]);
+        if (!error) {
+          setError("Aucun établissement réel de restauration trouvé dans un rayon de trajet acceptable autour de votre position.");
+        }
+      }
+    } catch (apiError: any) {
+      console.error("Erreur serveur/APIs recherche restaurant:", apiError);
+      setError("Une erreur est survenue lors de la recherche des restaurants : " + (apiError.message || String(apiError)));
+    } finally {
+      setLoading(false);
+      setSearchLoading(false);
+    }
+  };
+
+  const handleSearchRestos = handleSearchRestaurants;
+
   const handleStartService = useCallback((idToUse?: string | null, customStartTime?: Date, vehicleType?: string) => {
-    const now = customStartTime || currentTime;
+    let actualId = idToUse;
+    let actualStartTime = customStartTime;
+    let actualVehicle = vehicleType || '';
+
+    // Support both signatures:
+    // 1. (idToUse, customStartTime, vehicleType)
+    // 2. ('ASSU' or 'AMBU', customStartTime)
+    if (idToUse === 'ASSU' || idToUse === 'AMBU' || idToUse === 'VSL' || idToUse === 'SOLIDARITE' || idToUse === 'TAXI') {
+      actualId = null;
+      actualVehicle = idToUse;
+      actualStartTime = customStartTime;
+    }
+
+    const now = actualStartTime || currentTime;
     const todayStr = getLocalDateString(now);
     const actualStartTimeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     const preciseStart = now.toISOString();
+
+    // Clear the canceled flag since we are starting a shift
+    localStorage.removeItem('ambuflow_canceled_today');
     
     // On cherche si on a déjà une mission pour aujourd'hui
     const todayShift = shifts.find(s => s.day === todayStr && !s.isLeave);
-    const finalId = idToUse || todayShift?.id || activeShiftId;
+    const finalId = actualId || todayShift?.id || activeShiftId;
 
     if (finalId) {
       const existingShift = shifts.find(s => s.id === finalId);
@@ -962,7 +1407,7 @@ const App: React.FC = () => {
           ...s, 
           start: (s.start && s.start !== '--:--') ? s.start : actualStartTimeStr,
           preciseStart: s.preciseStart || preciseStart,
-          vehicle: vehicleType || s.vehicle || 'ASSU'
+          vehicle: actualVehicle || s.vehicle || 'ASSU'
         } : s));
         setActiveShiftId(finalId);
       } else {
@@ -975,7 +1420,7 @@ const App: React.FC = () => {
           preciseStart: preciseStart,
           end: '--:--', 
           crew: userName || 'À définir', 
-          vehicle: vehicleType || 'ASSU', 
+          vehicle: actualVehicle || 'ASSU', 
           breaks: [] 
         };
         setShifts(prev => [newShift, ...prev]);
@@ -991,7 +1436,7 @@ const App: React.FC = () => {
         preciseStart: preciseStart,
         end: '--:--', 
         crew: userName || 'À définir', 
-        vehicle: vehicleType || 'ASSU', 
+        vehicle: actualVehicle || 'ASSU', 
         breaks: [] 
       };
       setShifts(prev => [newShift, ...prev]);
@@ -1049,9 +1494,218 @@ const App: React.FC = () => {
     addNotification("MISSION CLÔTURÉE", "Le compteur journalier a été arrêté.", "info");
   }, [addLog, addNotification]);
 
-  const handleResume = useCallback(() => {
+  const handleEndShift = useCallback(() => {
+    handleEndService();
+  }, [handleEndService]);
+
+  const clearAllShifts = useCallback(async () => {
+    try {
+      setDeleteError(null);
+      
+      // Update local state first
+      setShifts([]);
+      stopServiceSilently();
+
+      // Clear from Firestore immediately
+      if (user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
+        const configRef = doc(db, 'users', user.uid);
+        await setDoc(configRef, sanitizeData({ shifts: [], updatedAt: new Date().toISOString() }), { merge: true });
+      }
+      
+      addNotification("Planning vidé", "Toutes les entrées ont été supprimées avec succès.", "success");
+    } catch (error: any) {
+      console.error("Error clearing shifts inside Firestore:", error);
+      setDeleteError("Erreur lors de la suppression définitive du planning.");
+      addNotification("Erreur de suppression", "Impossible de vider le planning.", "error");
+    }
+  }, [user, stopServiceSilently, addNotification]);
+
+  const deleteShift = useCallback(async (id: string) => {
+    try {
+      setDeleteError(null);
+      const shiftToDelete = shifts.find(s => s.id === id);
+      const updatedShifts = shifts.filter(s => s.id !== id);
+      
+      // Update local state
+      setShifts(updatedShifts);
+
+      const todayStr = getLocalDateString(currentTime);
+      const isTodayShift = shiftToDelete && shiftToDelete.day === todayStr;
+
+      if (activeShiftId === id || isTodayShift) {
+        setActiveShiftId(null);
+        stopServiceSilently();
+        
+        // SÉCURITÉ BOARD : On force la réinitialisation complète du statut de service et des states
+        setServiceStatus('OFF');
+        setStatus(ServiceStatus.OFF);
+        setCurrentShift(null);
+        setBreaks([]);
+        setSessionStartTime(null);
+        setBreakEndTimeActual(null);
+        setBreakStartDateTime(null);
+
+        // NETTOYAGE MÉMOIRE : On détruit définitivement les persistances pour éviter la résurrection du shift
+        localStorage.removeItem('ambu_service_status');
+        localStorage.removeItem('ambu_current_shift');
+        localStorage.removeItem('ambuflow_status');
+        localStorage.removeItem('ambuflow_active_shift_id');
+        localStorage.removeItem('ambuflow_break_start_datetime');
+        localStorage.removeItem('ambuflow_break_end');
+        localStorage.removeItem('ambu_daily_minutes');
+        localStorage.removeItem('ambu_break_minutes');
+        localStorage.removeItem('ambu_is_on_break');
+        localStorage.removeItem('ambu_break_start_time');
+      }
+
+      // Update Firestore directly
+      if (user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
+        const configRef = doc(db, 'users', user.uid);
+        await setDoc(configRef, sanitizeData({ shifts: updatedShifts, status: (activeShiftId === id || isTodayShift) ? ServiceStatus.OFF : status, activeShiftId: (activeShiftId === id || isTodayShift) ? null : activeShiftId, updatedAt: new Date().toISOString() }), { merge: true });
+      }
+      addNotification("Mission supprimée", "L'entrée du planning a été retirée.", "success");
+    } catch (error: any) {
+      console.error("Error deleting shift inside Firestore:", error);
+      setDeleteError("Erreur lors de la suppression de la mission.");
+      addNotification("Erreur de suppression", "Impossible de supprimer la mission.", "error");
+    }
+  }, [user, shifts, activeShiftId, currentTime, status, stopServiceSilently, addNotification]);
+
+  const deleteCurrentShift = useCallback(async () => {
+    const todayStr = getLocalDateString(currentTime);
+    const todayShift = shifts.find(s => s.day === todayStr);
+    const idDocumentFirestore = todayShift?.id || activeShiftId;
+    
+    try {
+      setDeleteError(null);
+      
+      // 1. ARRÊT CHRONO ET EXTINCTION VISUELLE IMMÉDIATE (AVANT LES REQUÊTES RÉSEAU)
+      setServiceStatus('OFF');
+      setStatus(ServiceStatus.OFF);
+      setCurrentShift(null);
+      setBreaks([]);
+      setActiveShiftId(null);
+      setSessionStartTime(null);
+      setBreakEndTimeActual(null);
+      setBreakStartDateTime(null);
+
+      // 2. NETTOYAGE FORCE DU TABLEAU LOCAL
+      const updatedShifts = shifts.filter(s => s.id !== idDocumentFirestore && s.day !== todayStr);
+      setShifts(updatedShifts);
+
+      // 3. SUPPRESSION DANS FIRESTORE
+      if (idDocumentFirestore && user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
+        try {
+          await deleteDoc(doc(db, 'shifts', idDocumentFirestore));
+        } catch (fsErr) {
+          console.info("Info: Aucun document individuel correspondant dans la collection secondaire 'shifts'.");
+        }
+      }
+
+      // Sync with Firestore profile users configuration if logged in
+      if (user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
+        const configRef = doc(db, 'users', user.uid);
+        await setDoc(configRef, sanitizeData({ 
+          shifts: updatedShifts, 
+          status: ServiceStatus.OFF,
+          activeShiftId: null,
+          updatedAt: new Date().toISOString() 
+         }), { merge: true });
+      }
+      
+      addNotification("Journée annulée", "La garde de la journée a été supprimée.", "success");
+    } catch (error: any) {
+      console.error("Error deleting current day shift inside Firestore:", error);
+      setDeleteError("Erreur lors de la suppression de la journée.");
+      addNotification("Erreur de suppression", "Impossible d'annuler la journée.", "error");
+    }
+  }, [user, shifts, activeShiftId, currentTime, addNotification]);
+
+  const handleAnnulerJournee = async (forceWithoutConfirm = false) => {
+    if (!forceWithoutConfirm && !window.confirm("Voulez-vous vraiment annuler cette journée ? Toutes les heures et pauses d'aujourd'hui seront effacées.")) {
+      return;
+    }
+
+    try {
+      // ÉTAPE A : On simule l'extinction complète et immédiate du bouton principal "FINIR"
+      setServiceStatus('OFF'); 
+      setBreaks([]);
+      setStatus(ServiceStatus.OFF);
+      
+      // ÉTAPE B : On libère la mémoire de l'application
+      const todayStr = getLocalDateString(currentTime);
+      localStorage.setItem('ambuflow_canceled_today', todayStr);
+      
+      // ÉTAPE C : Destruction chirurgicale dans Firestore
+      const shiftDuJour = shifts.find(s => s.day === todayStr);
+      const idDocumentFirestore = shiftDuJour?.id || activeShiftId;
+      if (idDocumentFirestore && user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
+        try {
+          await deleteDoc(doc(db, "shifts", idDocumentFirestore));
+        } catch (fsErr) {
+          console.info("Info: Aucun document individuel correspondant dans la collection secondaire 'shifts'.");
+        }
+      }
+
+      // ÉTAPE D : On vide le state pour forcer la disparition de la journée à l'écran
+      const updatedShifts = shifts.filter(s => s.id !== idDocumentFirestore && s.day !== todayStr);
+      setShifts(updatedShifts);
+      setCurrentShift(null);
+
+      // Nettoyage complet
+      setActiveShiftId(null);
+      setSessionStartTime(null);
+      setBreakEndTimeActual(null);
+      setBreakStartDateTime(null);
+
+      // Synchroniser avec la configuration utilisateur Firestore si possible
+      if (user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
+        const configRef = doc(db, 'users', user.uid);
+        await setDoc(configRef, sanitizeData({ 
+          shifts: updatedShifts, 
+          status: ServiceStatus.OFF,
+          activeShiftId: null,
+          updatedAt: new Date().toISOString() 
+        }), { merge: true });
+      }
+
+      alert("Journée annulée avec succès et planning libéré !");
+    } catch (error) {
+      console.error("Erreur lors du déverrouillage :", error);
+    }
+  };
+
+  const handleResetAll = async () => {
+    if (window.confirm("Êtes-vous sûr de vouloir annuler et supprimer la journée en cours ? Toutes les heures d'aujourd'hui seront effacées.")) {
+      setServiceStatus('OFF');
+      setStatus(ServiceStatus.OFF);
+      setCurrentShift(null);
+      setDailyMinutes(0);
+      setBreakMinutes(0);
+      setIsOnBreak(false);
+
+      localStorage.removeItem('ambu_service_status');
+      localStorage.removeItem('ambu_current_shift');
+      localStorage.removeItem('ambu_daily_minutes');
+      localStorage.removeItem('ambu_break_minutes');
+      localStorage.removeItem('ambu_is_on_break');
+      localStorage.removeItem('ambu_break_start_time');
+      localStorage.removeItem('ambuflow_status');
+      localStorage.removeItem('ambuflow_active_shift_id');
+      localStorage.removeItem('ambuflow_break_start_datetime');
+      localStorage.removeItem('ambuflow_break_end');
+
+      await handleAnnulerJournee(true);
+    }
+  };
+
+  const handleResume = useCallback(async (customTime?: Date) => {
+    const resumeTime = customTime || new Date();
+    
+    // First, let's prepare the updated shifts locally so we can write immediately
+    let updatedShifts = [...shifts];
     if (activeShiftId && status === ServiceStatus.BREAK) {
-      setShifts(prev => prev.map(s => {
+      updatedShifts = shifts.map(s => {
         if (s.id === activeShiftId && s.breaks && s.breaks.length > 0) {
           const updatedBreaks = [...s.breaks];
           const lastIndex = updatedBreaks.length - 1;
@@ -1059,10 +1713,10 @@ const App: React.FC = () => {
           
           // Calcul de la durée réelle consommée
           const [startH, startM] = lastBreak.start.split(':').map(Number);
-          const startDate = new Date(currentTime);
+          const startDate = new Date(resumeTime);
           startDate.setHours(startH, startM, 0, 0);
           
-          let diffMs = currentTime.getTime() - startDate.getTime();
+          let diffMs = resumeTime.getTime() - startDate.getTime();
           // Si le diff est négatif, c'est que la pause a traversé minuit
           if (diffMs < 0) {
             diffMs += 24 * 60 * 60 * 1000;
@@ -1071,20 +1725,183 @@ const App: React.FC = () => {
           let actualDuration = Math.round(diffMs / 60000);
           
           lastBreak.duration = actualDuration;
-          lastBreak.end = currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+          lastBreak.end = resumeTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
           updatedBreaks[lastIndex] = lastBreak;
           
           return { ...s, breaks: updatedBreaks };
         }
         return s;
-      }));
+      });
     }
 
+    // Prepare updated logs locally
+    let locationInfo: string | null = null;
+    if (autoGeo && currentGeoPosition) {
+      locationInfo = `Lat: ${currentGeoPosition.latitude.toFixed(5)}, Lng: ${currentGeoPosition.longitude.toFixed(5)}`;
+    }
+    const newLog: ActivityLog = { 
+      id: Math.random().toString(36).substr(2, 9), 
+      action: "Reprise de mission", 
+      time: resumeTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), 
+      timestamp: resumeTime, 
+      location: locationInfo || undefined, 
+      type: "resume" 
+    };
+    const finalLog = sanitizeData(newLog);
+    const updatedLogs = [finalLog, ...logs];
+
+    // 1. Update state synchronously
+    setShifts(updatedShifts);
+    setLogs(updatedLogs);
     setStatus(ServiceStatus.WORKING);
     setBreakEndTimeActual(null);
     setBreakStartDateTime(null);
-    addLog("Reprise de mission", "resume");
-  }, [activeShiftId, status, currentTime, addLog]);
+
+    // Save end break states to localStorage immediately
+    localStorage.removeItem('ambuflow_break_start_datetime');
+    localStorage.removeItem('ambuflow_break_end');
+
+    // 2. Direct database update to Firestore
+    if (user && user.uid !== 'local_user' && (user as any).uid !== 'admin') {
+      const config = {
+        userName,
+        profileImage,
+        jobTitle,
+        hourlyRate,
+        companyName,
+        companyCity,
+        firstName,
+        lastName,
+        qualifications,
+        entryDate,
+        workRegime,
+        monthlyHours,
+        leaveCalculation,
+        autoGeo,
+        hasDea,
+        hasAux,
+        hasTaxiCard,
+        primaryGraduationDate,
+        deaDate,
+        auxDate,
+        taxiDate,
+        taxiCardExpiryDate,
+        taxiFpcDate,
+        afgsuDate,
+        medicalExpiryDate,
+        contractStartDate,
+        contractType,
+        hoursBase,
+        cpCalculationMode,
+        modulationStartDate,
+        modulationWeeks,
+        initialCpBalance,
+        lastCpAccrualDate,
+        customHours,
+        weekendDays,
+        pushEnabled,
+        followSystemTheme,
+        themeChoice,
+        onboarded,
+        roles,
+        primaryRole,
+        weeklyContractHours,
+        overtimeMode,
+        payRateMode,
+        supplementaryTaskType,
+        status: ServiceStatus.WORKING,
+        activeShiftId,
+        scheduledShiftId,
+        nextAutoStart: nextAutoStart?.toISOString() || null,
+        shifts: updatedShifts,
+        logs: updatedLogs,
+        breakStartDateTime: null,
+        breakEndTimeActual: null,
+        notifications: notifications.map(n => ({
+          ...n,
+          timestamp: n.timestamp instanceof Date ? n.timestamp.toISOString() : n.timestamp
+        })),
+        updatedAt: new Date().toISOString()
+      };
+
+      try {
+        const { notifications: _, ...configToSave } = config;
+        localStorage.setItem('ambuflow_config', JSON.stringify(configToSave));
+
+        const sanitizedConfig = sanitizeData(config);
+        console.log("Firestore: Direct saving break completion status to database...");
+        await setDoc(doc(db, 'users', user.uid), sanitizedConfig, { merge: true });
+        console.log("Firestore: Direct saving completed successfully!");
+        
+        // Quota recovery mechanism: if it succeeded, clear any quota flags!
+        if ((window as any).firestoreQuotaExceeded || localStorage.getItem('firestore_quota_exceeded') === 'true') {
+          console.log("Firestore: Quota error cleared upon successful direct transaction!");
+          (window as any).firestoreQuotaExceeded = false;
+          localStorage.removeItem('firestore_quota_exceeded');
+          setIsQuotaExceeded(false);
+          await enableNetwork(db).catch(err => console.error("Could not re-enable network:", err));
+        }
+      } catch (error) {
+        console.error("Error direct-saving break end to Firestore:", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+      }
+    }
+  }, [
+    activeShiftId,
+    status,
+    shifts,
+    logs,
+    autoGeo,
+    currentGeoPosition,
+    user,
+    userName,
+    profileImage,
+    jobTitle,
+    hourlyRate,
+    companyName,
+    companyCity,
+    firstName,
+    lastName,
+    qualifications,
+    entryDate,
+    workRegime,
+    monthlyHours,
+    leaveCalculation,
+    hasDea,
+    hasAux,
+    hasTaxiCard,
+    primaryGraduationDate,
+    deaDate,
+    auxDate,
+    taxiDate,
+    taxiCardExpiryDate,
+    taxiFpcDate,
+    afgsuDate,
+    medicalExpiryDate,
+    contractStartDate,
+    contractType,
+    hoursBase,
+    cpCalculationMode,
+    modulationStartDate,
+    modulationWeeks,
+    initialCpBalance,
+    lastCpAccrualDate,
+    customHours,
+    weekendDays,
+    pushEnabled,
+    followSystemTheme,
+    themeChoice,
+    onboarded,
+    roles,
+    primaryRole,
+    weeklyContractHours,
+    overtimeMode,
+    payRateMode,
+    supplementaryTaskType,
+    scheduledShiftId,
+    nextAutoStart,
+    notifications
+  ]);
 
   const handleOpenBreakModal = useCallback((type: 'meal' | 'coffee') => {
     setBreakType(type);
@@ -1109,25 +1926,39 @@ const App: React.FC = () => {
   }, [activeShiftId, shifts]);
 
   const handleConfirmBreak = useCallback(async () => {
-    const [h, m] = breakStartTime.split(':').map(Number);
-    const startDate = new Date(currentTime);
-    startDate.setHours(h, m, 0, 0);
-    const endDate = new Date(startDate.getTime() + breakDuration * 60000);
+    // breakStartTime handles the "Début de pause" selected by the user (e.g. "12:00")
+    const hParts = breakStartTime.split(':').map(Number);
+    const startDate = new Date();
+    if (hParts.length === 2 && !isNaN(hParts[0]) && !isNaN(hParts[1])) {
+      startDate.setHours(hParts[0], hParts[1], 0, 0);
+    }
+
+    const durationMs = breakDuration * 60000;
+    const endDate = new Date(startDate.getTime() + durationMs);
+    
     setBreakStartDateTime(startDate);
     setBreakEndTimeActual(endDate);
+    
+    // Format the start/end times precisely based on the start moment chosen
+    const actualStartTimeStr = `${startDate.getHours().toString().padStart(2, '0')}:${startDate.getMinutes().toString().padStart(2, '0')}`;
     const endTimeStr = endDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
+    // Persist immediately to localStorage
+    localStorage.setItem('ambuflow_break_start_datetime', startDate.toISOString());
+    localStorage.setItem('ambuflow_break_end', endDate.toISOString());
+
+    let updatedShifts = [...shifts];
     if (activeShiftId) {
       const newBreak: Break = {
         id: Math.random().toString(36).substr(2, 9),
-        start: breakStartTime,
+        start: actualStartTimeStr,
         end: endTimeStr,
         duration: breakDuration,
         location: breakType === 'meal' ? breakLocation : 'Entreprise',
         isMeal: breakType === 'meal'
       };
       
-      setShifts(prev => prev.map(s => {
+      updatedShifts = shifts.map(s => {
         if (s.id === activeShiftId) {
           const breaks = s.breaks || [];
           // Si on est déjà en pause, on modifie la dernière
@@ -1143,20 +1974,200 @@ const App: React.FC = () => {
           return { ...s, breaks: [...breaks, newBreak] };
         }
         return s;
-      }));
+      });
+      setShifts(updatedShifts);
     }
     
+    let nextStatus = status;
+    const logAction = breakType === 'meal' 
+      ? (status === ServiceStatus.BREAK ? "Modification Déjeuner" : "Pause Déjeuner") 
+      : (status === ServiceStatus.BREAK ? "Modification Café" : "Pause Café");
+    
     if (status !== ServiceStatus.BREAK) {
-      console.log("Bouton cliqué: Passage en pause");
+      nextStatus = ServiceStatus.BREAK;
       setStatus(ServiceStatus.BREAK);
-      addLog(breakType === 'meal' ? "Pause Déjeuner" : "Pause Café", "break");
-    } else {
-      addLog(breakType === 'meal' ? "Modification Déjeuner" : "Modification Café", "break");
+    }
+    
+    // Prepare updated logs locally
+    let locationInfo: string | null = null;
+    if (autoGeo && currentGeoPosition) {
+      locationInfo = `Lat: ${currentGeoPosition.latitude.toFixed(5)}, Lng: ${currentGeoPosition.longitude.toFixed(5)}`;
+    }
+    const newLog: ActivityLog = { 
+      id: Math.random().toString(36).substr(2, 9), 
+      action: logAction, 
+      time: startDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), 
+      timestamp: startDate, 
+      location: locationInfo || undefined, 
+      type: "break" 
+    };
+    const finalLog = sanitizeData(newLog);
+    const updatedLogs = [finalLog, ...logs];
+    setLogs(updatedLogs);
+
+    // Save break states to localStorage immediately
+    localStorage.setItem('ambuflow_status', nextStatus);
+    localStorage.setItem('ambuflow_logs', JSON.stringify(updatedLogs));
+    localStorage.setItem('ambuflow_shifts', JSON.stringify(updatedShifts));
+
+    // Direct database update to Firestore for break start as requested.
+    if (user && user.uid !== 'local_user' && (user as any).uid !== 'admin') {
+      const config = {
+        userName,
+        profileImage,
+        jobTitle,
+        hourlyRate,
+        companyName,
+        companyCity,
+        firstName,
+        lastName,
+        qualifications,
+        entryDate,
+        workRegime,
+        monthlyHours,
+        leaveCalculation,
+        autoGeo,
+        hasDea,
+        hasAux,
+        hasTaxiCard,
+        primaryGraduationDate,
+        deaDate,
+        auxDate,
+        taxiDate,
+        taxiCardExpiryDate,
+        taxiFpcDate,
+        afgsuDate,
+        medicalExpiryDate,
+        contractStartDate,
+        contractType,
+        hoursBase,
+        cpCalculationMode,
+        modulationStartDate,
+        modulationWeeks,
+        initialCpBalance,
+        lastCpAccrualDate,
+        customHours,
+        weekendDays,
+        pushEnabled,
+        followSystemTheme,
+        themeChoice,
+        onboarded,
+        roles,
+        primaryRole,
+        weeklyContractHours,
+        overtimeMode,
+        payRateMode,
+        supplementaryTaskType,
+        status: nextStatus,
+        activeShiftId,
+        scheduledShiftId,
+        nextAutoStart: nextAutoStart?.toISOString() || null,
+        shifts: updatedShifts,
+        logs: updatedLogs,
+        breakStartDateTime: startDate.toISOString(),
+        breakEndTimeActual: endDate.toISOString(),
+        notifications: notifications.map(n => ({
+          ...n,
+          timestamp: n.timestamp instanceof Date ? n.timestamp.toISOString() : n.timestamp
+        })),
+        updatedAt: new Date().toISOString()
+      };
+
+      try {
+        const { notifications: _, ...configToSave } = config;
+        localStorage.setItem('ambuflow_config', JSON.stringify(configToSave));
+
+        const sanitizedConfig = sanitizeData(config);
+        console.log("Firestore: Direct saving break start status to database...");
+        await setDoc(doc(db, 'users', user.uid), sanitizedConfig, { merge: true });
+        console.log("Firestore: Direct saving start completed successfully!");
+      } catch (error) {
+        console.error("Error direct-saving break start to Firestore:", error);
+        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+      }
     }
     
     setShowBreakModal(false);
     setActiveTab('home'); // Redirection vers le Board
-  }, [breakStartTime, breakDuration, breakLocation, breakType, currentTime, activeShiftId, addLog, status]);
+  }, [
+    breakStartTime,
+    breakDuration,
+    breakLocation,
+    breakType,
+    activeShiftId,
+    status,
+    shifts,
+    logs,
+    autoGeo,
+    currentGeoPosition,
+    user,
+    userName,
+    profileImage,
+    jobTitle,
+    hourlyRate,
+    companyName,
+    companyCity,
+    firstName,
+    lastName,
+    qualifications,
+    entryDate,
+    workRegime,
+    monthlyHours,
+    leaveCalculation,
+    hasDea,
+    hasAux,
+    hasTaxiCard,
+    primaryGraduationDate,
+    deaDate,
+    auxDate,
+    taxiDate,
+    taxiCardExpiryDate,
+    taxiFpcDate,
+    afgsuDate,
+    medicalExpiryDate,
+    contractStartDate,
+    contractType,
+    hoursBase,
+    cpCalculationMode,
+    modulationStartDate,
+    modulationWeeks,
+    initialCpBalance,
+    lastCpAccrualDate,
+    customHours,
+    weekendDays,
+    pushEnabled,
+    followSystemTheme,
+    themeChoice,
+    onboarded,
+    roles,
+    primaryRole,
+    weeklyContractHours,
+    overtimeMode,
+    payRateMode,
+    supplementaryTaskType,
+    scheduledShiftId,
+    nextAutoStart,
+    notifications
+  ]);
+
+  const renderBreakTimer = useCallback(() => {
+    if (!breakStartDateTime || !breakEndTimeActual) return "00:00";
+    if (currentTime < breakStartDateTime) {
+      const diff = breakStartDateTime.getTime() - currentTime.getTime();
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    const nowMs = currentTime.getTime();
+    if (nowMs >= breakEndTimeActual.getTime()) {
+      return "PAUSE EXPIRÉE";
+    }
+    const diffMs = breakEndTimeActual.getTime() - nowMs;
+    const totalSecsLeft = Math.max(0, Math.floor(diffMs / 1000));
+    const m = Math.floor(totalSecsLeft / 60);
+    const s = totalSecsLeft % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }, [breakStartDateTime, breakEndTimeActual, currentTime]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -1222,7 +2233,7 @@ const App: React.FC = () => {
         customHours: "",
         followSystemTheme: true,
         pushEnabled: true,
-        onboarded: false, // This triggers the onboarding flow after reload
+        onboarded: true, // Onboarding has been removed
         roles: [],
         primaryRole: "",
         weeklyContractHours: 35,
@@ -1236,7 +2247,7 @@ const App: React.FC = () => {
       };
 
       // 2. Reset Firestore if user is not a guest
-      if (user && user.uid !== 'local_user') {
+      if (user && user.uid !== 'local_user' && !(window as any).firestoreQuotaExceeded) {
         // Clear user document
         await setDoc(doc(db, 'users', user.uid), sanitizeData(initialData));
         
@@ -1290,21 +2301,13 @@ const App: React.FC = () => {
     try {
       const uid = user.uid;
 
-      // 1. Re-authentication (Required by Firebase for sensitive ops)
-      // We check if we can delete directly first, if it fails with requires-recent-login, we show modal
-      try {
-        console.log("Attempting initial delete to check for recent login...");
-        // Note: we don't actually delete yet, we just try to see if it would work or if we need reauth
-        // But deleteUser(user) is the only way to check. 
-        // Better: always try to delete, if it fails, catch and show reauth.
-        
-        // However, the user wants us to ensure data is deleted BEFORE auth delete.
-        // So we should probably check auth status first or just proceed and handle the specific error.
-      } catch (e) {}
-
-      // 2. Delete Firestore Data (Cascade)
+      // 1. Delete Firestore Data (Cascade)
       // We do this BEFORE deleting the auth user so we still have permissions if rules require it
       const deleteData = async () => {
+        if ((window as any).firestoreQuotaExceeded) {
+          console.warn("Skipping firestore database cleanup due to quota exceedance");
+          return;
+        }
         console.log("Deleting user document...");
         await deleteDoc(doc(db, 'users', uid));
         
@@ -1336,7 +2339,7 @@ const App: React.FC = () => {
         // but it's better to warn the user. For now we continue.
       }
 
-      // 3. Delete Firebase Auth User
+      // 2. Delete Firebase Auth User
       console.log("Deleting Auth user...");
       try {
         await deleteUser(user);
@@ -1351,13 +2354,13 @@ const App: React.FC = () => {
         throw authError;
       }
 
-      // 4. Cleanup Client State
+      // 3. Cleanup Client State
       console.log("Cleanup local state...");
       localStorage.clear();
       sessionStorage.clear();
       setIsGuest(false);
 
-      // 5. Redirect to Root
+      // 4. Redirect to Root
       addNotification("Compte supprimé", "Votre compte et vos données ont été définitivement supprimés.", "success");
       
       setTimeout(() => {
@@ -1367,28 +2370,75 @@ const App: React.FC = () => {
     } catch (error: any) {
       console.error("Hard delete total failure:", error);
       setDeleteError(error.message || "Une erreur inattendue est survenue.");
+    } finally {
       setIsHardDeleting(false);
       isResettingRef.current = false;
     }
   }, [user, handleResetData, addNotification]);
 
+  // Détecte automatiquement la prochaine embauche / prise de poste planifiée dans l'agenda
   useEffect(() => {
+    if (status !== ServiceStatus.OFF) {
+      if (scheduledShiftId || nextAutoStart) {
+        setScheduledShiftId(null);
+        setNextAutoStart(null);
+      }
+      return;
+    }
+
     if (scheduledShiftId) {
       const scheduledShift = shifts.find(s => s.id === scheduledShiftId);
-      if (scheduledShift && scheduledShift.day && scheduledShift.start) {
+      if (scheduledShift && scheduledShift.day && scheduledShift.start && !scheduledShift.isLeave && !scheduledShift.isFerieChome) {
         const [h, m] = scheduledShift.start.split(':').map(Number);
         const [y, mon, d] = scheduledShift.day.split('-').map(Number);
         const newNextAutoStart = new Date(y, mon - 1, d, h, m, 0, 0);
-        if (nextAutoStart?.getTime() !== newNextAutoStart.getTime()) {
+        if (!nextAutoStart || nextAutoStart.getTime() !== newNextAutoStart.getTime()) {
           setNextAutoStart(newNextAutoStart);
-          addNotification("PLANIFICATION MISE À JOUR", `Prise de poste ajustée au ${d}/${mon.toString().padStart(2, '0')} à ${scheduledShift.start}`, "info");
         }
+        return;
       } else {
-        setNextAutoStart(null);
         setScheduledShiftId(null);
+        setNextAutoStart(null);
       }
     }
-  }, [shifts, scheduledShiftId, nextAutoStart, addNotification]);
+
+    const upcomingShifts = shifts.filter(s => {
+      if (s.isLeave || s.isFerieChome) return false;
+      if (!s.start || s.start === '--:--') return false;
+      if (dismissedShiftIds.includes(s.id)) return false;
+
+      try {
+        const [h, m] = s.start.split(':').map(Number);
+        const [y, mon, d] = s.day.split('-').map(Number);
+        const shiftStartDateTime = new Date(y, mon - 1, d, h, m, 0, 0);
+        return shiftStartDateTime > currentTime;
+      } catch (e) {
+        return false;
+      }
+    });
+
+    if (upcomingShifts.length > 0) {
+      upcomingShifts.sort((a, b) => {
+        const [ah, am] = a.start.split(':').map(Number);
+        const [ay, amon, ad] = a.day.split('-').map(Number);
+        const dateA = new Date(ay, amon - 1, ad, ah, am, 0, 0);
+
+        const [bh, bm] = b.start.split(':').map(Number);
+        const [by, bmon, bd] = b.day.split('-').map(Number);
+        const dateB = new Date(by, bmon - 1, bd, bh, bm, 0, 0);
+
+        return dateA.getTime() - dateB.getTime();
+      });
+
+      const nextShift = upcomingShifts[0];
+      const [h, m] = nextShift.start.split(':').map(Number);
+      const [y, mon, d] = nextShift.day.split('-').map(Number);
+      const nextShiftStartDateTime = new Date(y, mon - 1, d, h, m, 0, 0);
+
+      setScheduledShiftId(nextShift.id);
+      setNextAutoStart(nextShiftStartDateTime);
+    }
+  }, [shifts, status, scheduledShiftId, nextAutoStart, dismissedShiftIds, currentTime]);
 
   useEffect(() => {
     const todayStr = getLocalDateString(currentTime);
@@ -1408,11 +2458,68 @@ const App: React.FC = () => {
     }
   }, [currentTime, nextAutoStart, status, handleStartService, scheduledShiftId, shifts]);
 
+  // 1. ARRIVÉE AUTOMATIQUE À L'HEURE D'EMBAUCHE PRÉVUE (PLANIFICATION DE LA VEILLE)
+  useEffect(() => {
+    if (status === ServiceStatus.OFF && heureEmbauchePrevue) {
+      try {
+        const todayStr = getLocalDateString(currentTime);
+        // Avoid auto-start if today's shift was canceled
+        const hasCanceledToday = localStorage.getItem('ambuflow_canceled_today') === todayStr;
+        if (hasCanceledToday) {
+          return;
+        }
+
+        // Check if there is already a shift today to avoid duplicate auto-starts
+        const todayShift = shifts.find(s => s.day === todayStr);
+        if (!todayShift || (todayShift.start === '--:--' && todayShift.end === '--:--')) {
+          const [h, m] = heureEmbauchePrevue.split(':').map(Number);
+          if (!isNaN(h) && !isNaN(m)) {
+            const todayPlannedTime = new Date(currentTime);
+            todayPlannedTime.setHours(h, m, 0, 0);
+            
+            if (currentTime >= todayPlannedTime) {
+              handleStartService(null, todayPlannedTime);
+              addNotification("EMBAUCHE AUTOMATIQUE", `Votre service a été démarré automatiquement à ${heureEmbauchePrevue}.`, "success");
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error in auto starting shift on scheduled time:", e);
+      }
+    }
+  }, [currentTime, status, heureEmbauchePrevue, shifts, handleStartService, addNotification]);
+
+  // Listen to visibilitychange / window focus to catch wake-ups immediately
+  useEffect(() => {
+    const checkWakeUp = () => {
+      const now = new Date();
+      setCurrentTime(now); // Force clock sync immediately
+
+      const savedEnd = localStorage.getItem('ambuflow_break_end');
+      if (status === ServiceStatus.BREAK && savedEnd) {
+        const endTime = new Date(savedEnd);
+        if (now.getTime() >= endTime.getTime()) {
+          console.log("Wake up: Break time exceeded, auto-validating pause.");
+          handleResume(now);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', checkWakeUp);
+    window.addEventListener('focus', checkWakeUp);
+    return () => {
+      document.removeEventListener('visibilitychange', checkWakeUp);
+      window.removeEventListener('focus', checkWakeUp);
+    };
+  }, [status, handleResume]);
+
   useEffect(() => {
     if (status === ServiceStatus.BREAK && breakEndTimeActual && currentTime >= breakEndTimeActual) {
-      handleResume();
+      handleResume(currentTime);
     }
   }, [currentTime, status, breakEndTimeActual, handleResume]);
+
+
 
   useEffect(() => {
     localStorage.setItem('ambuflow_status', status);
@@ -1541,54 +2648,37 @@ const App: React.FC = () => {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const calculateEffectiveMinutes = useCallback((shift: Shift) => {
+  const calculateEffectiveMinutes = useCallback((shift: Shift): number => {
+    const isAbsenceForfaite =
+      shift.isCP === true ||
+      (shift as any).isCP === 'true' ||
+      shift.type === 'CP' ||
+      (shift as any).absenceType === 'CP' ||
+      (shift as any).leaveType === 'CP' ||
+      shift.isFerieChome === true ||
+      (shift as any).isFerieChome === 'true' ||
+      shift.type === 'FERIE' ||
+      (shift as any).minutesForced === 420 ||
+      ((shift.isLeave || shift.vehicle === 'CONGÉ') && (shift as any).leaveType === 'CP');
+
+    if (isAbsenceForfaite) {
+      // Securing allowances: zero ground allowances or primes
+      const repas = false;
+      const indemniteUnique = false;
+      const indemniteSpeciale = false;
+      const dimancheFerie = false;
+
+      return 420; // 7h créditées d'office
+    }
+
     if (shift.start === '--:--') return 0;
-    const [h1, m1] = shift.start.split(':').map(v => parseInt(v, 10) || 0);
-    let endH, endM;
-    
-    const isCurrentlyInBreak = shift.id === activeShiftId && status === ServiceStatus.BREAK;
-    const lastBreak = isCurrentlyInBreak && shift.breaks && shift.breaks.length > 0 
-      ? shift.breaks[shift.breaks.length - 1] 
-      : null;
 
-    if (shift.end !== '--:--' && shift.end !== '') {
-      const [h2, m2] = shift.end.split(':').map(v => parseInt(v, 10) || 0);
-      endH = h2;
-      endM = m2;
-    } else if (shift.id === activeShiftId) {
-      if (isCurrentlyInBreak && lastBreak) {
-        const [hb, mb] = lastBreak.start.split(':').map(v => parseInt(v, 10) || 0);
-        endH = hb;
-        endM = mb;
-      } else {
-        endH = currentTime.getHours();
-        endM = currentTime.getMinutes();
-      }
-    } else {
-      return 0;
-    }
-
-    const validH1 = isNaN(h1) ? 0 : h1;
-    const validM1 = isNaN(m1) ? 0 : m1;
-    const validEndH = isNaN(endH) ? 0 : endH;
-    const validEndM = isNaN(endM) ? 0 : endM;
-    
-    let amp = (validEndH * 60 + validEndM) - (validH1 * 60 + validM1);
-    if (amp < 0) amp += 1440;
-    let eff = isNaN(amp) ? 0 : amp;
-    
-    if (shift.breaks) {
-      shift.breaks.forEach(b => { 
-        if (b.end !== '--:--' && b.id !== lastBreak?.id) {
-          eff -= Number(b.duration) || 0; 
-        }
-      });
-    }
-    return Math.max(0, eff);
+    return getShiftMinutes(shift, activeShiftId, status, currentTime);
   }, [activeShiftId, currentTime, status]);
 
   const periodStats = useMemo(() => {
     let totalMin = 0;
+    let cpMinutes = 0;
     let targetMin = (parseInt(hoursBase) || 35) * 60;
     let title = "Semaine";
     let icon = CalendarRange;
@@ -1597,34 +2687,85 @@ const App: React.FC = () => {
     let extraData: any = null;
 
     if (workRegime === 'weekly') {
-      const monday = new Date(currentTime);
-      const day = monday.getDay();
-      const diff = monday.getDate() - day + (day === 0 ? -6 : 1);
-      monday.setDate(diff);
-      monday.setHours(0, 0, 0, 0);
-      shifts.forEach(s => {
-        const d = new Date(s.day);
-        if (d >= monday) totalMin += calculateEffectiveMinutes(s);
-      });
+      shifts
+        .filter(s => isSameWeek(parseLocalDate(s.day), currentTime))
+        .forEach(s => {
+          const isCP = s.isCP === true || (s as any).isCP === 'true' || s.type === 'CP' || (s as any).absenceType === 'CP' || (s as any).leaveType === 'CP' || (s.isLeave && (s as any).leaveType === 'CP') || ((s.isLeave || s.vehicle === 'CONGÉ') && (s as any).leaveType === 'CP');
+          const mins = isCP
+            ? 420
+            : ((s.isFerieChome === true || (s as any).isFerieChome === 'true' || s.type === 'FERIE') ? 420 : getShiftMinutes(s, activeShiftId, status, currentTime));
+          
+          if (isCP) {
+            cpMinutes += mins;
+          }
+          totalMin += mins;
+        });
       title = "Heures Semaine";
       subtitle = "Objectif 35h/39h";
       icon = CalendarRange;
       targetMin = (parseInt(hoursBase) || 35) * 60;
     } else if (workRegime === 'fortnightly') {
-      const anchor = contractStartDate ? new Date(contractStartDate) : new Date(2024, 0, 1);
-      const diffDays = Math.floor((currentTime.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
-      const startOfCycle = new Date(anchor);
-      startOfCycle.setDate(anchor.getDate() + Math.floor(diffDays / 14) * 14);
-      startOfCycle.setHours(0, 0, 0, 0);
-      shifts.forEach(s => {
-        const d = new Date(s.day);
-        if (d >= startOfCycle) totalMin += calculateEffectiveMinutes(s);
+      const referenceStartDate = modulationStartDate ? new Date(modulationStartDate) : new Date('2026-04-13'); 
+      const cycleWeeks = parseInt(modulationWeeks) || 9; // 9 semaines par défaut
+      const { startOfCycle, endOfCycle } = isWithinCustomModulationPeriod(currentTime, referenceStartDate, cycleWeeks, currentTime);
+
+      let minutesTerrain = 0;
+
+      if (Array.isArray(shifts)) {
+        shifts.forEach(s => {
+          if (!s || !s.day) return;
+          const shiftDate = parseLocalDate(s.day);
+          if (!shiftDate) return;
+
+          const { isInPeriod } = isWithinCustomModulationPeriod(shiftDate, referenceStartDate, cycleWeeks, currentTime);
+          
+          if (isInPeriod) {
+            const isCP = s.isCP === true || (s as any).isCP === 'true' || s.type === 'CP' || (s as any).absenceType === 'CP' || (s as any).leaveType === 'CP' || (s.isLeave && (s as any).leaveType === 'CP') || ((s.isLeave || s.vehicle === 'CONGÉ') && (s as any).leaveType === 'CP');
+            const mins = isCP
+              ? 420
+              : ((s.isFerieChome === true || (s as any).isFerieChome === 'true' || s.type === 'FERIE') ? 420 : calculateEffectiveMinutes(s));
+            
+            if (isCP) {
+              cpMinutes += mins;
+            }
+            minutesTerrain += mins;
+          }
+        });
+      }
+
+      // 3. Intégration de la règle des Congés Payés (7h = 420 min par jour)
+      const hasCPSemissions = shifts.some(s => {
+        if (!s || !s.day) return false;
+        const shiftDate = parseLocalDate(s.day);
+        if (!shiftDate) return false;
+        const { isInPeriod } = isWithinCustomModulationPeriod(shiftDate, referenceStartDate, cycleWeeks, currentTime);
+        const isCP = s.isCP === true || (s as any).isCP === 'true' || s.type === 'CP' || (s as any).absenceType === 'CP' || (s as any).leaveType === 'CP' || (s.isLeave && (s as any).leaveType === 'CP') || ((s.isLeave || s.vehicle === 'CONGÉ') && (s as any).leaveType === 'CP');
+        return isCP && isInPeriod;
       });
-      title = "Heures Quatorzaine";
-      subtitle = "Cycle de 14 jours";
+
+      const joursConges = hasCPSemissions ? 0 : (joursCPPrisCycle || 0);
+      const minutesConges = (joursConges || 0) * 7 * 60;
+      cpMinutes += minutesConges;
+
+      // 4. Attribution propre au compteur final sans écrasement par d'autres fonctions
+      totalMin = minutesTerrain + minutesConges;
+
+      // Configuration des textes de la jauge
+      title = "Cumul Modulation";
+      
+      const formatLabelDate = (date: Date) => {
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        return `${day}/${month}`;
+      };
+
+      const inclusiveEnd = new Date(endOfCycle.getTime() - 24 * 60 * 60 * 1000);
+      subtitle = `Cycle du ${formatLabelDate(startOfCycle)} au ${formatLabelDate(inclusiveEnd)}`;
       icon = Layers;
-      color = "violet";
-      targetMin = (parseInt(hoursBase) || 35) * 2 * 60;
+      color = "emerald";
+
+      // 5. Objectif contractuel automatique basé sur une semaine de 35h (ou hoursBase)
+      targetMin = (parseInt(hoursBase) || 35) * 60 * cycleWeeks;
     } else if (workRegime === 'modulation') {
       const weeks = parseInt(modulationWeeks) || 4;
       const cycleDays = weeks * 7;
@@ -1642,8 +2783,18 @@ const App: React.FC = () => {
       endOfCycle.setDate(startOfCycle.getDate() + cycleDays);
 
       shifts.forEach(s => {
-        const d = new Date(s.day);
-        if (d >= startOfCycle && d < endOfCycle) totalMin += calculateEffectiveMinutes(s);
+        const d = parseLocalDate(s.day);
+        if (d >= startOfCycle && d < endOfCycle) {
+          const isCP = s.isCP === true || (s as any).isCP === 'true' || s.type === 'CP' || (s as any).absenceType === 'CP' || (s as any).leaveType === 'CP' || (s.isLeave && (s as any).leaveType === 'CP') || ((s.isLeave || s.vehicle === 'CONGÉ') && (s as any).leaveType === 'CP');
+          const mins = isCP
+            ? 420
+            : ((s.isFerieChome === true || (s as any).isFerieChome === 'true' || s.type === 'FERIE') ? 420 : calculateEffectiveMinutes(s));
+          
+          if (isCP) {
+            cpMinutes += mins;
+          }
+          totalMin += mins;
+        }
       });
       targetMin = (parseInt(hoursBase) || 35) * weeks * 60;
       const remainingMin = Math.max(0, targetMin - totalMin);
@@ -1666,8 +2817,18 @@ const App: React.FC = () => {
     } else if (workRegime === 'annualization') {
       const start = new Date(currentTime.getFullYear(), 0, 1);
       shifts.forEach(s => {
-        const d = new Date(s.day);
-        if (d >= start) totalMin += calculateEffectiveMinutes(s);
+        const d = parseLocalDate(s.day);
+        if (d >= start) {
+          const isCP = s.isCP === true || (s as any).isCP === 'true' || s.type === 'CP' || (s as any).absenceType === 'CP' || (s as any).leaveType === 'CP' || (s.isLeave && (s as any).leaveType === 'CP') || ((s.isLeave || s.vehicle === 'CONGÉ') && (s as any).leaveType === 'CP');
+          const mins = isCP
+            ? 420
+            : ((s.isFerieChome === true || (s as any).isFerieChome === 'true' || s.type === 'FERIE') ? 420 : calculateEffectiveMinutes(s));
+          
+          if (isCP) {
+            cpMinutes += mins;
+          }
+          totalMin += mins;
+        }
       });
       title = "Compteur Annuel";
       subtitle = "Objectif 1607h";
@@ -1678,8 +2839,15 @@ const App: React.FC = () => {
     const h = Math.floor(totalMin / 60);
     const m = totalMin % 60;
     const progress = targetMin > 0 ? (totalMin / targetMin) * 100 : 0;
-    return { title, subtitle, icon, value: `${h}h ${m}m`, color, extraData, progress };
-  }, [shifts, workRegime, calculateEffectiveMinutes, currentTime, contractStartDate, modulationStartDate, modulationWeeks, hoursBase, status, breakStartDateTime]);
+    const formattedVal = workRegime === 'fortnightly'
+      ? `${h}h${String(m).padStart(2, '0')}`
+      : `${h}h ${String(m).padStart(2, '0')}m`;
+
+    const hourlyRateVal = parseFloat(effectiveHourlyRate) || 12.79;
+    const cpGross = (cpMinutes / 60) * hourlyRateVal;
+
+    return { title, subtitle, icon, value: formattedVal, color, extraData, progress, cpMinutes, cpGross };
+  }, [shifts, workRegime, calculateEffectiveMinutes, currentTime, contractStartDate, modulationStartDate, modulationWeeks, hoursBase, status, breakStartDateTime, joursCPPrisCycle]);
 
   const todayStats = useMemo(() => {
     const todayStr = getLocalDateString(currentTime);
@@ -1695,6 +2863,18 @@ const App: React.FC = () => {
     const IND_DIMANCHE_FERIE = 23.90;
 
     todayShifts.forEach(s => {
+      if (
+        s.isFerieChome === true || 
+        s.isFerieChome === 'true' || 
+        s.isCP === true || 
+        s.isCP === 'true' || 
+        (s.isLeave && s.leaveType === 'CP') || 
+        s.type === 'CP' || 
+        s.type === 'FERIE'
+      ) {
+        totalEffectiveMin += 420;
+        return;
+      }
       if (s.isLeave || s.vehicle === 'CONGÉ') return; // Pas de gains ni d'amplitude pour les congés
       
       if (s.start !== '--:--') {
@@ -1776,7 +2956,7 @@ const App: React.FC = () => {
     const calculateGainsForPeriod = (start: Date, end: Date) => {
       let total = 0;
       const periodShifts = shifts.filter(s => {
-        const d = new Date(s.day);
+        const d = parseLocalDate(s.day);
         return d >= start && d < end;
       });
 
@@ -1786,6 +2966,11 @@ const App: React.FC = () => {
       const IND_DIMANCHE_FERIE = 23.90;
 
       periodShifts.forEach(s => {
+        if (s.isFerieChome === true || s.isFerieChome === 'true' || s.isCP === true || s.isCP === 'true' || (s.isLeave && s.leaveType === 'CP')) {
+          const hourly = parseFloat(effectiveHourlyRate) || 12.79;
+          total += 7 * hourly;
+          return;
+        }
         if (s.isLeave || s.vehicle === 'CONGÉ') return;
         if (s.start !== '--:--') {
           const sParts = s.start.split(':');
@@ -1829,7 +3014,7 @@ const App: React.FC = () => {
           if (isSundayOrHoliday(s.day)) total += IND_DIMANCHE_FERIE;
         }
       });
-      return total;
+      return total * 0.78;
     };
 
     // Current Day
@@ -1872,9 +3057,9 @@ const App: React.FC = () => {
     };
 
     return [
-      { label: 'Gains Estimés', value: currentDayGains, trend: 'up' },
-      { label: 'Gains Semaine', value: currentWeekGains, trend: getTrend(currentWeekGains, prevWeekGains) },
-      { label: 'Gains Mois', value: currentMonthGains, trend: getTrend(currentMonthGains, prevMonthGains) }
+      { label: 'Gains estimés (Net)', value: currentDayGains, trend: 'up' },
+      { label: 'Gains Semaine (Net)', value: currentWeekGains, trend: getTrend(currentWeekGains, prevWeekGains) },
+      { label: 'Gains Mois (Net)', value: currentMonthGains, trend: getTrend(currentMonthGains, prevMonthGains) }
     ];
   }, [shifts, currentTime, activeShiftId, effectiveHourlyRate, calculateEffectiveMinutes, status, breakStartDateTime]);
 
@@ -1882,6 +3067,7 @@ const App: React.FC = () => {
     let assuMin = 0;
     let ambuMin = 0;
     let vslMin = 0;
+    let taxiMin = 0;
     
     // Get shifts for the current period based on workRegime
     let periodShifts = shifts;
@@ -1891,14 +3077,16 @@ const App: React.FC = () => {
       const diff = monday.getDate() - day + (day === 0 ? -6 : 1);
       monday.setDate(diff);
       monday.setHours(0, 0, 0, 0);
-      periodShifts = shifts.filter(s => new Date(s.day) >= monday);
+      periodShifts = shifts.filter(s => parseLocalDate(s.day) >= monday);
     } else if (workRegime === 'fortnightly') {
-      const anchor = contractStartDate ? new Date(contractStartDate) : new Date(2024, 0, 1);
-      const diffDays = Math.floor((currentTime.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
-      const startOfCycle = new Date(anchor);
-      startOfCycle.setDate(anchor.getDate() + Math.floor(diffDays / 14) * 14);
-      startOfCycle.setHours(0, 0, 0, 0);
-      periodShifts = shifts.filter(s => new Date(s.day) >= startOfCycle);
+      const referenceStartDate = modulationStartDate ? new Date(modulationStartDate) : new Date('2026-04-13'); 
+      const cycleWeeks = parseInt(modulationWeeks) || 9; // 9 semaines par défaut
+      periodShifts = shifts.filter(s => {
+        const d = parseLocalDate(s.day);
+        if (!d) return false;
+        const { isInPeriod } = isWithinCustomModulationPeriod(d, referenceStartDate, cycleWeeks, currentTime);
+        return isInPeriod;
+      });
     } else if (workRegime === 'modulation') {
       const weeks = parseInt(modulationWeeks) || 4;
       const cycleDays = weeks * 7;
@@ -1916,30 +3104,54 @@ const App: React.FC = () => {
       endOfCycle.setDate(startOfCycle.getDate() + cycleDays);
 
       periodShifts = shifts.filter(s => {
-        const d = new Date(s.day);
+        const d = parseLocalDate(s.day);
         return d >= startOfCycle && d < endOfCycle;
       });
     } else if (workRegime === 'annualization') {
       const start = new Date(currentTime.getFullYear(), 0, 1);
-      periodShifts = shifts.filter(s => new Date(s.day) >= start);
+      periodShifts = shifts.filter(s => parseLocalDate(s.day) >= start);
     }
 
     periodShifts.forEach(s => {
       if (s.isLeave || s.vehicle === 'CONGÉ') return;
       const min = calculateEffectiveMinutes(s);
-      if (s.vehicle.includes('ASSU')) assuMin += min;
-      else if (s.vehicle.includes('VSL')) vslMin += min;
-      else ambuMin += min;
+      if (s.vehicle && s.vehicle.includes('ASSU')) assuMin += min;
+      else if (s.vehicle && s.vehicle.includes('VSL')) vslMin += min;
+      else if (s.vehicle && s.vehicle.includes('TAXI')) taxiMin += min;
+      else if (s.vehicle && s.vehicle.includes('AMBU')) ambuMin += min;
+      else {
+        ambuMin += min;
+      }
     });
     
-    const total = assuMin + ambuMin + vslMin;
+    const total = assuMin + ambuMin + vslMin + taxiMin;
     const pAssu = total > 0 ? (assuMin / total) * 100 : 0;
     const pAmbu = total > 0 ? (ambuMin / total) * 100 : 0;
     const pVsl = total > 0 ? (vslMin / total) * 100 : 0;
+    const pTaxi = total > 0 ? (taxiMin / total) * 100 : 0;
+    
     const gradient = total > 0 
-      ? `conic-gradient(#FF4B5C 0% ${pAssu}%, #10b981 ${pAssu}% ${pAssu + pAmbu}%, #6366f1 ${pAssu + pAmbu}% 100%)`
+      ? `conic-gradient(#FF4B5C 0% ${pAssu}%, #10b981 ${pAssu}% ${pAssu + pAmbu}%, #6366f1 ${pAssu + pAmbu}% ${pAssu + pAmbu + pVsl}%, #f59e0b ${pAssu + pAmbu + pVsl}% 100%)`
       : `conic-gradient(#e2e8f0 0% 100%)`;
-    return { assu: pAssu.toFixed(0), ambu: pAmbu.toFixed(0), vsl: pVsl.toFixed(0), gradient, hasData: total > 0 };
+
+    const formatMinutesToHours = (totalMinutes: number) => {
+      const h = Math.floor(totalMinutes / 60);
+      const m = totalMinutes % 60;
+      return `${h}h${m.toString().padStart(2, '0')}`;
+    };
+
+    return { 
+      assu: pAssu.toFixed(0), 
+      ambu: pAmbu.toFixed(0), 
+      vsl: pVsl.toFixed(0), 
+      taxi: pTaxi.toFixed(0),
+      assuHours: formatMinutesToHours(assuMin),
+      ambuHours: formatMinutesToHours(ambuMin),
+      vslHours: formatMinutesToHours(vslMin),
+      taxiHours: formatMinutesToHours(taxiMin),
+      gradient, 
+      hasData: total > 0 
+    };
   }, [shifts, calculateEffectiveMinutes, workRegime, currentTime, contractStartDate, modulationStartDate, modulationWeeks]);
 
   const getNextShiftCountdown = () => {
@@ -1958,7 +3170,18 @@ const App: React.FC = () => {
     const nextCountdown = getNextShiftCountdown();
     const todayStr = getLocalDateString(currentTime);
     const todayShift = shifts.find(s => s.day === todayStr);
-    const isTodayFinished = todayShift && todayShift.end !== '--:--';
+    const isTodayFerieChome = shifts.some(s => s.day === todayStr && (s.isFerieChome === true || (s as any).isFerieChome === 'true' || s.type === 'FERIE'));
+    const isTodayCP = shifts.some(s => s.day === todayStr && (s.isCP === true || (s as any).isCP === 'true' || (s.isLeave && s.leaveType === 'CP') || s.type === 'CP'));
+    const isTodayFinished = (todayShift && todayShift.end !== '--:--') || isTodayFerieChome || isTodayCP;
+
+    const currentDayShift = shifts.find(s => s.day === todayStr) || currentShift;
+    const dailyMinutes = todayShift ? calculateEffectiveMinutes(todayShift) : 0;
+    
+    // Variable de rendu finale pour la jauge du jour
+    const finalDailyMinutes = (isTodayCP || isTodayFerieChome || currentDayShift?.isCP || (currentDayShift as any)?.isCP === 'true' || currentDayShift?.absenceType === 'CP' || currentDayShift?.isFerieChome || (currentDayShift as any)?.isFerieChome === 'true' || currentDayShift?.type === 'CP' || (currentDayShift as any)?.leaveType === 'CP')
+      ? 420 
+      : dailyMinutes; // Garde le chrono dynamique uniquement si ce n'est pas un congé/férié
+
     const PeriodIcon = periodStats.icon;
     
     const isBreakActive = status === ServiceStatus.BREAK && (!breakStartDateTime || currentTime >= breakStartDateTime);
@@ -2001,8 +3224,8 @@ const App: React.FC = () => {
     const vehicleImage = vehicleImages[activeVehicle] || vehicleImages.ASSU;
 
     return (
-      <div className="p-5 space-y-5 animate-fadeIn pb-32">
-        <div className="flex items-center justify-between mb-2">
+      <div className={`w-full flex flex-col items-center p-4 pb-4 relative animate-fadeIn bg-transparent`}>
+        <div className="w-full max-w-7xl flex items-center justify-between mb-2">
           <div>
             <p className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1">
               Tableau de Bord
@@ -2010,7 +3233,7 @@ const App: React.FC = () => {
           </div>
         </div>
         {roles.length > 1 && (
-          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+          <div className="w-full max-w-7xl flex gap-2 overflow-x-auto pb-2 no-scrollbar">
             {roles.map(role => (
               <button
                 key={role}
@@ -2028,7 +3251,7 @@ const App: React.FC = () => {
           </div>
         )}
         {afgsuStatus && afgsuStatus !== 'valid' && (
-          <div className={`p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
+          <div className={`w-full max-w-7xl p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
             afgsuStatus === 'expired' 
               ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.2)] animate-pulse-border' 
               : 'bg-orange-500/10 border-orange-500/30 text-orange-500'
@@ -2049,7 +3272,7 @@ const App: React.FC = () => {
         )}
 
         {medicalStatus && medicalStatus !== 'valid' && (
-          <div className={`p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
+          <div className={`w-full max-w-7xl p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
             medicalStatus === 'expired' 
               ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.2)] animate-pulse-border' 
               : 'bg-orange-500/10 border-orange-500/30 text-orange-500'
@@ -2070,7 +3293,7 @@ const App: React.FC = () => {
         )}
 
         {taxiCardStatus && taxiCardStatus !== 'valid' && (
-          <div className={`p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
+          <div className={`w-full max-w-7xl p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
             taxiCardStatus === 'expired' 
               ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.2)] animate-pulse-border' 
               : 'bg-orange-500/10 border-orange-500/30 text-orange-500'
@@ -2091,7 +3314,7 @@ const App: React.FC = () => {
         )}
 
         {taxiFpcStatus && taxiFpcStatus !== 'valid' && (
-          <div className={`p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
+          <div className={`w-full max-w-7xl p-4 rounded-[24px] border flex items-center gap-4 animate-slideUp ${
             taxiFpcStatus === 'expired' 
               ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.2)] animate-pulse-border' 
               : 'bg-orange-500/10 border-orange-500/30 text-orange-500'
@@ -2119,13 +3342,14 @@ const App: React.FC = () => {
                 <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Prise de poste :</span>
                 <span className="text-xs font-black tabular-nums">{nextCountdown}</span>
               </div>
-              <button onClick={() => { setNextAutoStart(null); setScheduledShiftId(null); }} className={`p-1 rounded-full transition-colors ${effectiveDarkMode ? 'hover:bg-white/10' : 'hover:bg-indigo-100'}`}><X size={12} /></button>
+              <button onClick={() => { if (scheduledShiftId) { setDismissedShiftIds(prev => [...prev, scheduledShiftId]); } setNextAutoStart(null); setScheduledShiftId(null); }} className={`p-1 rounded-full transition-colors ${effectiveDarkMode ? 'hover:bg-white/10' : 'hover:bg-indigo-100'}`}><X size={12} /></button>
             </div>
           </div>
         )}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="w-full max-w-xl flex flex-col gap-5 mt-4 mb-4">
+
           <div 
-            className={`${bentoCardBase} col-span-2 p-8 flex flex-col justify-between min-h-[340px] ${status === ServiceStatus.WORKING ? 'text-white border-none shadow-indigo-500/20 active-mission-card' : (isBreakActive ? 'text-white' : (status === ServiceStatus.BREAK ? 'bg-gradient-to-br from-amber-500 to-amber-700 text-white' : (isTodayFinished ? 'bg-gradient-to-br from-emerald-600 to-emerald-900 text-white shadow-emerald-500/20' : '')))}`}
+            className={`${bentoCardBase} w-full col-span-2 p-8 flex flex-col justify-between min-h-[340px] ${status === ServiceStatus.WORKING ? 'text-white border-none shadow-indigo-500/20 active-mission-card' : (isBreakActive ? 'text-white' : (status === ServiceStatus.BREAK ? 'bg-gradient-to-br from-amber-500 to-amber-700 text-white' : ((isTodayFerieChome || isTodayCP) ? 'bg-gradient-to-br from-violet-600 to-violet-950 text-white shadow-violet-500/20' : (isTodayFinished ? 'bg-gradient-to-br from-emerald-600 to-emerald-950 text-white shadow-emerald-500/20' : ''))))}`}
             style={status === ServiceStatus.WORKING ? {
               backgroundImage: `linear-gradient(rgba(49, 46, 129, 0.8), rgba(30, 27, 75, 0.9)), url("${vehicleImage}")`,
               backgroundSize: 'cover',
@@ -2138,21 +3362,41 @@ const App: React.FC = () => {
           >
             <div className="flex justify-between items-start">
               <div className="space-y-1">
-                <p className="text-[11px] font-black uppercase tracking-[0.2em] opacity-60">
+                <p className="text-[11px] font-black uppercase tracking-[0.2em] opacity-60 font-sans">
                   {status === ServiceStatus.OFF 
-                    ? (isTodayFinished ? 'Journée Terminée' : 'Disponibilité') 
+                    ? (nextAutoStart && scheduledShiftId ? 'PROCHAINE EMBAUCHE' : (isTodayFerieChome ? 'Jour Férié' : (isTodayCP ? 'Congé Payé' : (isTodayFinished ? 'Journée Terminée' : 'Disponibilité')))) 
                     : status === ServiceStatus.WORKING 
                       ? 'Mission Active' 
                       : breakLabel}
                 </p>
                 <div className="flex items-center gap-2">
-                  <div className={`w-2.5 h-2.5 rounded-full ${status === ServiceStatus.WORKING ? 'bg-emerald-400 animate-pulse' : status === ServiceStatus.BREAK ? 'bg-white animate-pulse' : isTodayFinished ? 'bg-emerald-300' : 'bg-slate-500'}`} />
-                  <h2 className="text-2xl font-black tracking-tight">{status === ServiceStatus.OFF ? (isTodayFinished ? 'Mission Validée' : 'En attente') : status === ServiceStatus.WORKING ? 'En Service' : 'Coupure en cours'}</h2>
+                  <div className={`w-2.5 h-2.5 rounded-full ${status === ServiceStatus.WORKING ? 'bg-emerald-400 animate-pulse' : status === ServiceStatus.BREAK ? 'bg-white animate-pulse' : (nextAutoStart && scheduledShiftId ? 'bg-indigo-400 animate-pulse' : (isTodayFerieChome || isTodayCP) ? 'bg-violet-300 animate-pulse' : isTodayFinished ? 'bg-emerald-300' : 'bg-slate-500')}`} />
+                  <h2 className="text-2xl font-black tracking-tight font-sans">{status === ServiceStatus.OFF ? (nextAutoStart && scheduledShiftId ? 'Prise de poste imminente' : (isTodayFerieChome ? 'Jour Férié Chômé' : (isTodayCP ? 'Congé Payé (CP)' : isTodayFinished ? 'Mission Validée' : 'En attente'))) : status === ServiceStatus.WORKING ? 'En Service' : 'Coupure en cours'}</h2>
+                </div>
+                <div className="mt-2.5">
+                  <span className={`inline-block text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full ${
+                    status === ServiceStatus.WORKING || status === ServiceStatus.BREAK || isTodayFinished
+                      ? 'bg-white/15 text-white'
+                      : effectiveDarkMode ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+                  }`}>
+                    Objectif minimal du jour : {Math.round((parseInt(hoursBase, 10) || 35) / 5)}h00
+                  </span>
                 </div>
               </div>
+
+              {(status !== ServiceStatus.OFF || (todayShift && !isTodayFinished)) && (
+                <button 
+                  onClick={handleResetAll}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 transition-all text-rose-300 active:scale-95 text-[10px] font-black uppercase tracking-widest shrink-0 shadow-lg shadow-rose-950/20"
+                  title="Annuler ou Supprimer la garde actuelle"
+                >
+                  <Trash size={12} className="text-rose-400" />
+                  <span>Annuler</span>
+                </button>
+              )}
             </div>
-            <div className="py-6">
-              <div className="animate-fadeIn">
+            <div className="py-6 w-full text-center px-6">
+              <div className="animate-fadeIn w-full flex flex-col items-center justify-center">
                  <p className="text-[10px] font-black uppercase opacity-40 tracking-widest mb-2">
                    {status === ServiceStatus.BREAK 
                      ? (breakStartDateTime && currentTime < breakStartDateTime 
@@ -2164,8 +3408,17 @@ const App: React.FC = () => {
                         ? (nextAutoStart && scheduledShiftId ? 'Prise de poste dans' : (isTodayFinished ? 'Total Travaillé' : 'Heure actuelle'))
                         : 'Compteur journalier')}
                  </p>
-                 <h1 className={`font-black tabular-nums tracking-tighter leading-none drop-shadow-2xl ${isBreakFinished ? 'text-rose-500 animate-blink-red text-4xl py-4' : 'text-7xl'}`}>
-                   {status === ServiceStatus.BREAK ? (() => { 
+                 <h1 
+                   className={`font-black tabular-nums tracking-tighter leading-none drop-shadow-2xl ${isBreakFinished ? 'text-rose-500 animate-blink-red py-4' : ''}`}
+                   style={{ 
+                     fontSize: isBreakFinished ? '2.25rem' : 'clamp(2rem, 11vw, 4.5rem)', 
+                     whiteSpace: 'nowrap',
+                     display: 'block',
+                     width: '100%',
+                     textAlign: 'center'
+                   }}
+                 >
+                   {isTodayCP || isTodayFerieChome ? "07:00" : status === ServiceStatus.BREAK ? renderBreakTimer() : false ? (() => {
                      if (breakStartDateTime && currentTime < breakStartDateTime) {
                        const diff = breakStartDateTime.getTime() - currentTime.getTime();
                        const m = Math.floor(diff / 60000);
@@ -2186,138 +3439,169 @@ const App: React.FC = () => {
                      const s = timeLeft % 60;
                      return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
                    })() : status === ServiceStatus.OFF ? (nextAutoStart && scheduledShiftId ? nextCountdown : (isTodayFinished ? (() => {
-                     const sParts = todayShift!.start.split(':');
-                     const eParts = todayShift!.end.split(':');
-                     if (sParts.length < 2 || eParts.length < 2) return "00:00";
-                     const h1 = parseInt(sParts[0], 10);
-                     const m1 = parseInt(sParts[1], 10);
-                     const h2 = parseInt(eParts[0], 10);
-                     const m2 = parseInt(eParts[1], 10);
-                     if (isNaN(h1) || isNaN(m1) || isNaN(h2) || isNaN(m2)) return "00:00";
-                     let dur = (h2 * 60 + m2) - (h1 * 60 + m1);
-                     if (dur < 0) dur += 1440;
-                     if (todayShift!.breaks) todayShift!.breaks.forEach(b => dur -= (Number(b.duration) || 0));
-                     const finalDur = Math.max(0, dur);
+                     const finalDur = finalDailyMinutes;
                      const h = Math.floor(finalDur / 60);
                      const m = finalDur % 60;
                      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
                    })() : currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))) : getDuration()}
                  </h1>
+                 {status === ServiceStatus.OFF && isTodayCP && (
+                   <p className="text-sm font-bold text-violet-200 mt-2 uppercase tracking-wide animate-fadeIn text-center">
+                     7h00 (Congé Payé)
+                   </p>
+                 )}
+                 {status === ServiceStatus.OFF && isTodayFerieChome && (
+                   <p className="text-sm font-bold text-violet-200 mt-2 uppercase tracking-wide animate-fadeIn text-center">
+                     7h00 (Jour Férié)
+                   </p>
+                 )}
               </div>
             </div>
             <div className="space-y-3">
-              {status === ServiceStatus.OFF ? (
-                isTodayFinished ? (
-                  <div className="flex gap-3">
-                    <button onClick={() => setActiveTab('planning')} className="flex-1 py-5 rounded-[24px] bg-white/10 backdrop-blur-md border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all"><History size={16} /> Voir Agenda</button>
-                    <button onClick={() => setShowVehicleModal(true)} className="flex-[2] py-5 rounded-[24px] bg-white text-emerald-600 font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl"><Play size={18} fill="currentColor" /> Nouvelle Mission</button>
-                  </div>
-                ) : (
-                  <button onClick={() => setShowVehicleModal(true)} className="w-full py-6 rounded-[28px] bg-indigo-600 text-white shadow-2xl font-black text-xl active:scale-95 transition-all flex items-center justify-center gap-3 border border-indigo-400/50"><Play size={24} fill="currentColor" /> DÉBUTER</button>
-                )
-              ) : status === ServiceStatus.WORKING ? (
-                <>
-                  <div className="grid grid-cols-2 gap-3 animate-slideUp">
-                    <button onClick={() => handleOpenBreakModal('meal')} className="py-4 rounded-[24px] bg-white/10 border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all"><Utensils size={16} /> Déjeuner</button>
-                    <button onClick={() => handleOpenBreakModal('coffee')} className="py-4 rounded-[24px] bg-white/10 border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all"><Coffee size={16} /> Café</button>
-                  </div>
-                  <button onClick={handleEndService} className="w-full py-5 rounded-[24px] bg-rose-500/20 backdrop-blur-md border border-rose-500/30 text-rose-100 font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all"><LogOut size={16} /> Finir</button>
-                </>
-              ) : (
-                <div className="space-y-3">
-                  <div className="flex gap-3 animate-slideUp">
-                    <button onClick={handleModifyBreak} className="flex-1 py-5 rounded-[24px] bg-white/10 backdrop-blur-md border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all">MODIFIER</button>
-                    <button 
-                      onClick={handleResume} 
-                      disabled={!canResume}
-                      className={`flex-[2] py-5 rounded-[24px] font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl ${
-                        canResume 
-                          ? 'bg-white text-amber-600' 
-                          : 'bg-white/20 text-white/40 cursor-not-allowed'
-                      }`}
-                    >
-                      <Zap size={18} fill="currentColor" /> Reprendre
-                    </button>
-                  </div>
+              {status === ServiceStatus.WORKING && (
+                <div className="grid grid-cols-2 gap-3 animate-slideUp">
+                  <button onClick={() => handleOpenBreakModal('meal')} className="py-4 rounded-[24px] bg-white/10 border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all"><Utensils size={16} /> Déjeuner</button>
+                  <button onClick={() => handleOpenBreakModal('coffee')} className="py-4 rounded-[24px] bg-white/10 border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all"><Coffee size={16} /> Café</button>
                 </div>
+              )}
+              {status === ServiceStatus.BREAK && (
+                <div className="flex gap-3 animate-slideUp">
+                  <button onClick={handleModifyBreak} className="flex-1 py-5 rounded-[24px] bg-white/10 backdrop-blur-md border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all">MODIFIER</button>
+                  <button 
+                    onClick={handleResume} 
+                    disabled={!canResume}
+                    className={`flex-[2] py-5 rounded-[24px] font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl ${
+                      canResume 
+                        ? 'bg-white text-amber-600' 
+                        : 'bg-white/20 text-white/40 cursor-not-allowed'
+                    }`}
+                  >
+                    <Zap size={18} fill="currentColor" /> Reprendre
+                  </button>
+                </div>
+              )}
+
+              {/* Dynamic unified button for starting/ending the day/service */}
+              {(serviceStatus === 'OFF' || status === ServiceStatus.OFF) ? (
+                <button 
+                  onClick={() => {
+                    const todayStr = getLocalDateString(currentTime);
+                    const todayShift = shifts.find(s => s.day === todayStr && !s.isLeave);
+                    const plannedVehicle = todayShift?.vehicle || 'ASSU';
+                    handleStartService(plannedVehicle, new Date());
+                  }} 
+                  className="w-full py-6 rounded-[28px] bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xl font-black text-xl active:scale-95 transition-all flex items-center justify-center gap-3 border border-emerald-400/50"
+                >
+                  <Play size={24} fill="currentColor" />
+                  <span>Débuter la journée</span>
+                </button>
+              ) : (
+                <button 
+                  onClick={handleEndShift} 
+                  className="w-full py-6 rounded-[28px] bg-gradient-to-r from-orange-500 to-rose-600 hover:from-orange-600 hover:to-rose-700 text-white shadow-2xl font-black text-xl active:scale-95 transition-all flex items-center justify-center gap-3 border border-orange-400/50 animate-pulse-subtle"
+                >
+                  <LogOut size={24} />
+                  <span>Finir la journée</span>
+                </button>
               )}
             </div>
           </div>
-          <div className={`${bentoCardBase} col-span-2 min-h-[160px] flex flex-col group`}>
-             <div className="flex-1 p-6 relative flex flex-col justify-between">
+
+          {true && (
+          <div 
+             className={`${bentoCardBase} w-full col-span-2 min-h-[160px] flex flex-col group cursor-pointer selection:bg-transparent`}
+             onTouchStart={(e) => {
+                if (workRegime === 'modulation' && periodStats.extraData) {
+                   (window as any)._touchStartX = e.touches[0].clientX;
+                }
+             }}
+             onTouchEnd={(e) => {
+                if (workRegime === 'modulation' && periodStats.extraData) {
+                   const touchStartX = (window as any)._touchStartX || 0;
+                   const touchEndX = e.changedTouches[0].clientX;
+                   if (touchStartX - touchEndX > 50) {
+                      setCarouselIndex(1);
+                   } else if (touchEndX - touchStartX > 50) {
+                      setCarouselIndex(0);
+                   }
+                }
+             }}
+             onClick={() => {
+                if (workRegime === 'modulation' && periodStats.extraData) {
+                   setCarouselIndex(prev => prev === 0 ? 1 : 0);
+                } else {
+                   setActiveTab('paie');
+                }
+             }}
+          >
+             <div className="flex-1 px-4 sm:px-5 pt-6 pb-6 relative flex flex-col justify-between">
                 {workRegime === 'modulation' && periodStats.extraData ? (
                   carouselIndex === 0 ? (
-                    <div className="flex items-center justify-between animate-fadeIn px-2">
-                       <div className="flex items-center gap-5">
-                          <div className={`w-20 h-20 rounded-[32px] ${effectiveDarkMode ? 'bg-indigo-500/10' : 'bg-indigo-50'} flex items-center justify-center text-indigo-500 shadow-inner`}>
-                             <Hourglass size={32} className="animate-pulse" />
+                    <div className="flex items-center justify-between animate-fadeIn px-2 w-full relative">
+                       <div className="flex items-center gap-3">
+                          <div className={`w-14 h-14 rounded-2xl ${effectiveDarkMode ? 'bg-indigo-500/10' : 'bg-indigo-50'} flex items-center justify-center text-indigo-500 shadow-inner shrink-0`}>
+                             <Hourglass size={24} className="animate-pulse" />
                           </div>
-                          <div className="space-y-0.5">
-                             <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-1">Fin de Modulation</p>
-                             <p className={`text-4xl font-black tracking-tighter tabular-nums ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>{periodStats.extraData.countdown}</p>
-                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest opacity-60">Temps restant</p>
+                          <div className="text-left">
+                             <p className="text-[9px] font-black uppercase text-slate-400 tracking-[0.2em] mb-0.5">Fin de Modulation</p>
+                             <p className={`text-3xl font-black tracking-tighter tabular-nums leading-none ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>{periodStats.extraData.countdown}</p>
+                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest opacity-60 mt-0.5">Temps restant</p>
                           </div>
                        </div>
-                       <button onClick={() => setCarouselIndex(1)} className={`p-4 rounded-3xl ${effectiveDarkMode ? 'bg-white/5' : 'bg-slate-100'} hover:scale-105 transition-all`}>
-                          <ChevronRight size={24} className="text-slate-400" />
-                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between animate-fadeIn px-2">
-                       <div className="flex items-center gap-5">
-                          <div className={`w-20 h-20 rounded-[32px] ${effectiveDarkMode ? 'bg-emerald-500/10' : 'bg-emerald-50'} flex items-center justify-center text-emerald-500 shadow-inner`}>
-                             <PieChart size={32} />
+                    <div className="flex items-center justify-between animate-fadeIn px-2 w-full relative">
+                       <div className="flex items-center justify-around w-full py-2 whitespace-nowrap">
+                          {/* Bloc Effectué (Gauche) */}
+                          <div className="flex flex-col items-center select-none">
+                             <div className={`text-3xl font-bold ${effectiveDarkMode ? 'text-white' : 'text-slate-900'} whitespace-nowrap`}>
+                                {periodStats.extraData.performedHours}h {periodStats.extraData.performedMins}m
+                             </div>
+                             <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider mt-1">
+                                Effectué
+                             </span>
                           </div>
-                          <div className="space-y-2">
-                             <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Contrat: {periodStats.extraData.targetHours}h</span>
+
+                          {/* Séparateur au MILIEU */}
+                          <div className={`h-10 w-[1px] ${effectiveDarkMode ? 'bg-slate-800' : 'bg-slate-100'} shrink-0`} />
+
+                          {/* Bloc Reste (Droite) */}
+                          <div className="flex flex-col items-center select-none">
+                             <div className={`text-3xl font-bold ${effectiveDarkMode ? 'text-slate-300' : 'text-slate-400'} whitespace-nowrap`}>
+                                {periodStats.extraData.remainingHours}h {periodStats.extraData.remainingMins}m
                              </div>
-                             <div className="flex gap-5">
-                                <div>
-                                   <p className={`text-2xl font-black tracking-tighter ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>{periodStats.extraData.performedHours}h {periodStats.extraData.performedMins}m</p>
-                                   <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">EFFECTUÉ</p>
-                                </div>
-                                <div className="w-px h-8 bg-slate-500/10 self-center" />
-                                <div>
-                                   <p className="text-2xl font-black tracking-tighter text-slate-400">{periodStats.extraData.remainingHours}h {periodStats.extraData.remainingMins}m</p>
-                                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">RESTE</p>
-                                </div>
-                             </div>
+                             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">
+                                Reste
+                             </span>
                           </div>
                        </div>
-                       <button onClick={() => setCarouselIndex(0)} className={`p-4 rounded-3xl ${effectiveDarkMode ? 'bg-white/5' : 'bg-slate-100'} hover:scale-105 transition-all`}>
-                          <ChevronLeft size={24} className="text-slate-400" />
-                       </button>
                     </div>
                   )
                 ) : (
-                  <div className="flex items-center justify-between animate-fadeIn px-2">
-                     <div className="flex items-center gap-5">
-                        <div className={`w-20 h-20 rounded-[32px] ${effectiveDarkMode ? `bg-${periodStats.color}-500/10` : `bg-${periodStats.color}-50`} flex items-center justify-center text-${periodStats.color}-500 shadow-inner`}>
-                           <PeriodIcon size={32} />
+                  <div className="flex items-center justify-between animate-fadeIn px-2 w-full relative">
+                     <div className="flex items-center gap-3">
+                        <div className={`w-14 h-14 rounded-2xl ${effectiveDarkMode ? `bg-${periodStats.color}-500/10` : `bg-${periodStats.color}-50`} flex items-center justify-center text-${periodStats.color}-500 shadow-inner shrink-0`}>
+                           <PeriodIcon size={24} />
                         </div>
-                        <div className="space-y-0.5">
-                           <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-1">{periodStats.title}</p>
-                           <p className={`text-4xl font-black tracking-tighter ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>{periodStats.value}</p>
-                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest opacity-60">{periodStats.subtitle}</p>
+                        <div className="text-left">
+                           <p className="text-[9px] font-black uppercase text-slate-400 tracking-[0.2em] mb-0.5">{periodStats.title}</p>
+                           <p className={`text-3xl font-black tracking-tighter leading-none ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>{periodStats.value}</p>
+                           <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest opacity-60 mt-0.5">{periodStats.subtitle}</p>
                         </div>
                      </div>
-                     <button onClick={() => setActiveTab('paie')} className={`p-4 rounded-3xl ${effectiveDarkMode ? 'bg-white/5' : 'bg-slate-100'} hover:scale-105 transition-all`}>
-                        <ChevronRight size={24} className="text-slate-400" />
-                     </button>
                   </div>
                 )}
                 
                 <div className="mt-8 space-y-4">
                    <div className="relative h-2 w-full bg-slate-100 dark:bg-white/5 rounded-full overflow-hidden">
                       <div 
-                        className={`h-full transition-all duration-1000 ease-out shadow-[0_0_15px_rgba(99,102,241,0.2)] ${
-                          periodStats.progress > 120 ? 'bg-rose-600' :
-                          periodStats.progress > 110 ? 'bg-rose-500' :
-                          periodStats.progress > 100 ? 'bg-orange-500' :
-                          `bg-${periodStats.color}-500`
-                        }`} 
-                        style={{ width: `${Math.min(100, periodStats.progress)}%` }} 
+                         className={`h-full transition-all duration-1000 ease-out shadow-[0_0_15px_rgba(99,102,241,0.2)] ${
+                           periodStats.progress > 120 ? 'bg-rose-600' :
+                           periodStats.progress > 110 ? 'bg-rose-500' :
+                           periodStats.progress > 100 ? 'bg-orange-500' :
+                           `bg-${periodStats.color}-500`
+                         }`} 
+                         style={{ width: `${Math.min(100, periodStats.progress)}%` }} 
                       />
                    </div>
                    <div className="flex justify-between items-center px-1">
@@ -2327,99 +3611,317 @@ const App: React.FC = () => {
                         periodStats.progress > 110 ? 'text-rose-500' :
                         periodStats.progress > 100 ? 'text-orange-500' :
                         effectiveDarkMode ? 'text-emerald-400' : 'text-emerald-600'
-                      }`}>
-                        {periodStats.progress.toFixed(0)}% de l'objectif
+                       }`}>
+                         {periodStats.progress.toFixed(0)}% de l'objectif
                       </span>
                       <span className="text-[9px] font-black text-slate-400 uppercase tracking-[0.15em]">Objectif</span>
+                    </div>
+
+                    {workRegime === 'fortnightly' && (
+                       <div 
+                         onClick={(e) => e.stopPropagation()}
+                         className={`p-4 rounded-2xl flex flex-col gap-4 border transition-all ${
+                           effectiveDarkMode 
+                             ? 'bg-slate-900/80 border-white/5 text-slate-300' 
+                             : 'bg-slate-100/50 border-slate-200 text-slate-600'
+                         }`}
+                       >
+                         <div className="flex items-center justify-between gap-3 text-xs">
+                           <div className="flex flex-col text-left">
+                             <span className="font-extrabold tracking-tight uppercase text-[10px] text-indigo-400">Congés Payés (7h/j)</span>
+                             <span className="text-[10px] opacity-70">Poser des jours pour le cycle</span>
+                           </div>
+                           <div className="flex items-center gap-2 bg-black/10 dark:bg-white/5 p-1 rounded-xl">
+                             <button 
+                               type="button"
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 handleAdjustCPDays(false);
+                               }} 
+                               className="w-8 h-8 flex items-center justify-center bg-rose-500 hover:bg-rose-600 active:scale-90 text-white rounded-lg font-black transition-all"
+                             >
+                               -
+                             </button>
+                             <span className="w-10 text-center font-extrabold text-base tabular-nums">
+                               {joursCPPrisCycle} j.
+                             </span>
+                             <button 
+                               type="button"
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 handleAdjustCPDays(true);
+                               }} 
+                               className="w-8 h-8 flex items-center justify-center bg-emerald-500 hover:bg-emerald-600 active:scale-90 text-white rounded-lg font-black transition-all"
+                             >
+                               +
+                             </button>
+                           </div>
+                         </div>
+                         
+                         <div className="border-t border-slate-100 dark:border-white/5 pt-3 flex items-center justify-between text-[11px] font-bold">
+                           <span className="text-slate-400 uppercase tracking-widest text-[9px]">Solde restant (Stock CP) :</span>
+                           <span className={`tabular-nums font-extrabold text-sm ${soldeTotalCP <= 2 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                             {soldeTotalCP} jours
+                           </span>
+                         </div>
+                       </div>
+                    )}
                    </div>
                 </div>
-             </div>
              {workRegime === 'modulation' && (
                 <div className="pb-6 flex justify-center gap-2.5">
                    <button 
-                     onClick={() => setCarouselIndex(0)}
+                     onClick={(e) => {
+                        e.stopPropagation();
+                        setCarouselIndex(0);
+                     }}
                      className={`h-2 rounded-full transition-all duration-500 ${carouselIndex === 0 ? 'bg-indigo-500 w-8' : 'bg-slate-500/20 w-2'}`} 
                    />
                    <button 
-                     onClick={() => setCarouselIndex(1)}
+                     onClick={(e) => {
+                        e.stopPropagation();
+                        setCarouselIndex(1);
+                     }}
                      className={`h-2 rounded-full transition-all duration-500 ${carouselIndex === 1 ? 'bg-emerald-500 w-8' : 'bg-slate-500/20 w-2'}`} 
                    />
                 </div>
              )}
           </div>
-          <div className={`${bentoCardBase} p-6 flex flex-col justify-between aspect-square overflow-hidden relative group`}>
-             <AnimatePresence mode="wait">
-               <motion.div 
-                 key={gainsCarouselIndex}
-                 initial={{ opacity: 0, x: 20 }}
-                 animate={{ opacity: 1, x: 0 }}
-                 exit={{ opacity: 0, x: -20 }}
-                 className="h-full flex flex-col justify-between"
-                 drag="x"
-                 dragConstraints={{ left: 0, right: 0 }}
-                 onDragEnd={(_e, { offset }) => {
-                   const swipe = offset.x;
-                   if (swipe < -50) setGainsCarouselIndex((gainsCarouselIndex + 1) % 3);
-                   else if (swipe > 50) setGainsCarouselIndex((gainsCarouselIndex + 2) % 3);
-                 }}
-               >
-                  <div className="flex justify-between items-start">
-                    <div className={`p-3 rounded-2xl ${
-                      gainsCarouselStats[gainsCarouselIndex].trend === 'up' ? 'bg-emerald-500/10 text-emerald-500' :
-                      gainsCarouselStats[gainsCarouselIndex].trend === 'down' ? 'bg-rose-500/10 text-rose-500' :
-                      'bg-slate-500/10 text-slate-500'
-                    }`}>
-                      {gainsCarouselStats[gainsCarouselIndex].trend === 'up' ? <ArrowUp size={20} /> :
-                       gainsCarouselStats[gainsCarouselIndex].trend === 'down' ? <ArrowDown size={20} /> :
-                       <Minus size={20} />}
-                    </div>
-                    <div className="flex gap-1 mt-2">
-                      {[0, 1, 2].map(i => (
-                        <div key={i} className={`w-1 h-1 rounded-full transition-all ${i === gainsCarouselIndex ? 'bg-indigo-500 w-3' : 'bg-slate-300'}`} />
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-1">
-                      {gainsCarouselStats[gainsCarouselIndex].label}
-                    </p>
-                    <div className="flex items-baseline gap-1">
-                      <span className="text-3xl font-black tracking-tighter">
-                        {gainsCarouselStats[gainsCarouselIndex].value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </span>
-                      <span className="text-sm font-bold text-slate-400">€</span>
-                    </div>
-                  </div>
-               </motion.div>
-             </AnimatePresence>
-             {isGuest && (
-                <div className="absolute inset-0 bg-slate-900/5 backdrop-blur-[6px] z-10 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
-                   <Lock className="text-indigo-500 mb-1 opacity-60" size={20} />
-                   <p className="text-[10px] font-black uppercase text-indigo-500 tracking-[0.2em] opacity-80 leading-tight">Gains Floutés</p>
-                   <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mt-1 opacity-60">Mode Invité Uniquement</p>
+          )}
+          <div className="flex flex-row justify-between items-center w-full max-w-xl mx-auto gap-4">
+             <div className="flex-1 w-1/2">
+                <div className={`${bentoCardBase} w-full p-6 flex flex-col justify-between aspect-square overflow-hidden relative group`}>
+                <AnimatePresence mode="wait">
+                  <motion.div 
+                    key={gainsCarouselIndex}
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    className="h-full flex flex-col justify-between"
+                    drag="x"
+                    dragConstraints={{ left: 0, right: 0 }}
+                    onDragEnd={(_e, { offset }) => {
+                      const swipe = offset.x;
+                      if (swipe < -50) setGainsCarouselIndex((gainsCarouselIndex + 1) % 3);
+                      else if (swipe > 50) setGainsCarouselIndex((gainsCarouselIndex + 2) % 3);
+                    }}
+                  >
+                     <div className="flex justify-between items-start">
+                       <div className={`p-3 rounded-2xl ${
+                         gainsCarouselStats[gainsCarouselIndex].trend === 'up' ? 'bg-emerald-500/10 text-emerald-500' :
+                         gainsCarouselStats[gainsCarouselIndex].trend === 'down' ? 'bg-rose-500/10 text-rose-500' :
+                         'bg-slate-500/10 text-slate-500'
+                       }`}>
+                         {gainsCarouselStats[gainsCarouselIndex].trend === 'up' ? <ArrowUp size={20} /> :
+                          gainsCarouselStats[gainsCarouselIndex].trend === 'down' ? <ArrowDown size={20} /> :
+                          <Minus size={20} />}
+                       </div>
+                       <div className="flex gap-1 mt-2">
+                         {[0, 1, 2].map(i => (
+                           <div key={i} className={`w-1 h-1 rounded-full transition-all ${i === gainsCarouselIndex ? 'bg-indigo-500 w-3' : 'bg-slate-300'}`} />
+                         ))}
+                       </div>
+                     </div>
+                     <div>
+                       <p className="text-[10px] font-black uppercase text-emerald-600 dark:text-emerald-400 tracking-widest mb-1">
+                         {gainsCarouselStats[gainsCarouselIndex].label}
+                       </p>
+                       <div className="flex items-baseline gap-1">
+                         <span className="text-3xl font-black tracking-tighter text-emerald-600 dark:text-emerald-400">
+                           {gainsCarouselStats[gainsCarouselIndex].value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                         </span>
+                         <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">€</span>
+                       </div>
+                     </div>
+                  </motion.div>
+                </AnimatePresence>
+                {isGuest && (
+                   <div className="absolute inset-0 bg-slate-900/5 backdrop-blur-[6px] z-10 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+                      <Lock className="text-indigo-500 mb-1 opacity-60" size={20} />
+                      <p className="text-[10px] font-black uppercase text-indigo-500 tracking-[0.2em] opacity-80 leading-tight">Gains Floutés</p>
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mt-1 opacity-60">Mode Invité Uniquement</p>
+                   </div>
+                )}
                 </div>
-             )}
+             </div>
+             
+             <div className="flex-1 w-1/2">
+                <div className={`${bentoCardBase} w-full p-6 flex flex-col justify-between aspect-square`}>
+                   <div className="flex justify-between">
+                      <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-500">
+                         <TimerIcon size={20} />
+                      </div>
+                      <div className={`w-1.5 h-1.5 rounded-full bg-indigo-500 ${status === ServiceStatus.WORKING ? 'animate-pulse' : ''}`} />
+                   </div>
+                   <div>
+                      <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-1">
+                         Amplitude
+                      </p>
+                      <div className="flex items-baseline gap-1">
+                         <span className="text-3xl font-black tracking-tighter">
+                            {todayStats.amplitude}
+                         </span>
+                      </div>
+                   </div>
+                </div>
+             </div>
           </div>
-          <div className={`${bentoCardBase} p-6 flex flex-col justify-between aspect-square`}><div className="flex justify-between"><div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-500"><TimerIcon size={20} /></div><div className={`w-1.5 h-1.5 rounded-full bg-indigo-500 ${status === ServiceStatus.WORKING ? 'animate-pulse' : ''}`} /></div><div><p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-1">Amplitude</p><div className="flex items-baseline gap-1"><span className="text-3xl font-black tracking-tighter">{todayStats.amplitude}</span></div></div></div>
-          
           
 
           {primaryRole !== 'taxi' && (
-            <div className={`${bentoCardBase} col-span-2 p-6 animate-slideUp`}>
-              <div className="flex justify-between items-center mb-6"><div className="flex items-center gap-3"><div className="p-2.5 rounded-xl bg-slate-500/5 text-slate-400"><Car size={18} /></div><h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Répartition Véhicules</h3></div></div>
-              <div className="flex items-center gap-10">
-                <div className="relative w-28 h-28 flex-shrink-0"><div className="w-full h-full rounded-full transition-all duration-1000 shadow-xl" style={{ background: vehicleDistribution.gradient }} /><div className={`absolute inset-3 rounded-full flex items-center justify-center ${effectiveDarkMode ? 'bg-slate-900 shadow-inner shadow-black/60' : 'bg-white shadow-inner shadow-slate-200'}`}><Car size={20} className="text-slate-300 opacity-40" /></div></div>
-                <div className="flex-1 space-y-4">
-                  <div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-[#FF4B5C]" /><span className="text-[10px] font-black uppercase tracking-widest text-slate-400">ASSU</span></div><span className="text-xs font-black tabular-nums">{vehicleDistribution.assu}%</span></div>
-                  <div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" /><span className="text-[10px] font-black uppercase tracking-widest text-slate-400">AMBU</span></div><span className="text-xs font-black tabular-nums">{vehicleDistribution.ambu}%</span></div>
-                  <div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-[#6366f1]" /><span className="text-[10px] font-black uppercase tracking-widest text-slate-400">VSL</span></div><span className="text-xs font-black tabular-nums">{vehicleDistribution.vsl}%</span></div>
+            <motion.div 
+              className={`${bentoCardBase} w-full col-span-2 p-6 animate-slideUp overflow-hidden cursor-grab active:cursor-grabbing select-none`}
+              drag="x"
+              dragConstraints={{ left: 0, right: 0 }}
+              dragElastic={0.2}
+              onDragEnd={(event, info) => {
+                const swipeThreshold = 50;
+                if (info.offset.x < -swipeThreshold) {
+                  setVehicleStatMode('hours');
+                } else if (info.offset.x > swipeThreshold) {
+                  setVehicleStatMode('percent');
+                }
+              }}
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-slate-500/5 text-slate-400">
+                    <Car size={18} />
+                  </div>
+                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Répartition Véhicules</h3>
+                </div>
+                
+                {/* Visual Mode Selector Pills */}
+                <div className={`p-0.5 rounded-full flex gap-0.5 ${effectiveDarkMode ? 'bg-slate-950/60' : 'bg-slate-100'}`}>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setVehicleStatMode('percent');
+                    }}
+                    className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all duration-300 ${vehicleStatMode === 'percent' ? (effectiveDarkMode ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-indigo-600 shadow-sm') : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    %
+                  </button>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setVehicleStatMode('hours');
+                    }}
+                    className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all duration-300 ${vehicleStatMode === 'hours' ? (effectiveDarkMode ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-indigo-600 shadow-sm') : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Heures
+                  </button>
                 </div>
               </div>
-            </div>
+
+              <div className="flex items-center gap-10">
+                <div className="relative w-28 h-28 flex-shrink-0">
+                  <div className="w-full h-full rounded-full transition-all duration-1000 shadow-xl" style={{ background: vehicleDistribution.gradient }} />
+                  <div className={`absolute inset-3 rounded-full flex items-center justify-center ${effectiveDarkMode ? 'bg-slate-900 shadow-inner shadow-black/60' : 'bg-white shadow-inner shadow-slate-200'}`}>
+                    <AnimatePresence mode="wait">
+                      {vehicleStatMode === 'percent' ? (
+                        <motion.div
+                          key="percent"
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.8 }}
+                          transition={{ duration: 0.15 }}
+                        >
+                          <Percent size={18} className="text-indigo-400" />
+                        </motion.div>
+                      ) : (
+                        <motion.div
+                          key="hours"
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.8 }}
+                          transition={{ duration: 0.15 }}
+                        >
+                          <Clock size={18} className="text-emerald-400" />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </div>
+
+                <div className="flex-1 space-y-4">
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={vehicleStatMode}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      transition={{ duration: 0.15 }}
+                      className="space-y-4"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full bg-[#FF4B5C]" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">ASSU</span>
+                        </div>
+                        <span className="text-xs font-black tabular-nums">
+                          {vehicleStatMode === 'percent' ? `${vehicleDistribution.assu}%` : vehicleDistribution.assuHours}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">AMBU</span>
+                        </div>
+                        <span className="text-xs font-black tabular-nums">
+                          {vehicleStatMode === 'percent' ? `${vehicleDistribution.ambu}%` : vehicleDistribution.ambuHours}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full bg-[#6366f1]" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">VSL</span>
+                        </div>
+                        <span className="text-xs font-black tabular-nums">
+                          {vehicleStatMode === 'percent' ? `${vehicleDistribution.vsl}%` : vehicleDistribution.vslHours}
+                        </span>
+                      </div>
+
+                      {(roles.includes('taxi') || parseInt(vehicleDistribution.taxi) > 0) && (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">TAXI</span>
+                          </div>
+                          <span className="text-xs font-black tabular-nums">
+                            {vehicleStatMode === 'percent' ? `${vehicleDistribution.taxi}%` : vehicleDistribution.taxiHours}
+                          </span>
+                        </div>
+                      )}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+              </div>
+
+              {/* Dot Indicators */}
+              <div className="flex justify-center gap-1.5 mt-5">
+                <span 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setVehicleStatMode('percent');
+                  }}
+                  className={`w-1.5 h-1.5 rounded-full cursor-pointer transition-all ${vehicleStatMode === 'percent' ? 'bg-indigo-500 w-3' : 'bg-slate-400/30'}`} 
+                />
+                <span 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setVehicleStatMode('hours');
+                  }}
+                  className={`w-1.5 h-1.5 rounded-full cursor-pointer transition-all ${vehicleStatMode === 'hours' ? 'bg-indigo-500 w-3' : 'bg-slate-400/30'}`} 
+                />
+              </div>
+            </motion.div>
           )}
 
           {/* COMPTEURS DE SOLDES */}
-          <div className={`${bentoCardBase} col-span-2 p-6`}>
+          <div className={`${bentoCardBase} w-full col-span-2 p-6`}>
             <div className="flex justify-between items-center mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-500">
@@ -2457,9 +3959,9 @@ const App: React.FC = () => {
         </div>
 
         {showBreakModal && (
-          <div className="fixed inset-0 z-[300] flex items-center justify-center p-6 animate-fadeIn">
+          <div className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center p-0 sm:p-6 animate-fadeIn">
             <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-2xl" onClick={() => setShowBreakModal(false)} />
-            <div className={`relative w-full max-w-sm rounded-[48px] p-8 shadow-2xl animate-popIn border ${effectiveDarkMode ? 'bg-slate-900 border-white/10 text-white' : 'bg-white border-slate-100 text-slate-900'}`}>
+            <div className={`relative w-full max-w-sm rounded-t-[32px] sm:rounded-[48px] max-h-[85vh] overflow-y-auto p-6 pb-24 shadow-2xl animate-popIn border ${effectiveDarkMode ? 'bg-slate-900 border-white/10 text-white' : 'bg-white border-slate-100 text-slate-900'}`}>
               <div className="flex justify-between items-center mb-10">
                 <div className="flex items-center gap-4">
                   <div className={`p-4 rounded-[22px] shadow-lg ${breakType === 'meal' ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
@@ -2545,6 +4047,166 @@ const App: React.FC = () => {
                   </div>
                 )}
 
+                {breakType === 'meal' && breakLocation === 'Extérieur' && (
+                  <div className="space-y-4 p-5 bg-indigo-500/5 dark:bg-white/5 rounded-[28px] border border-indigo-500/10 dark:border-white/10 animate-fadeIn mt-2 text-left">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em]">Recherche Repas GPS + AI</span>
+                      <Sparkles size={14} className="text-indigo-400 animate-pulse" />
+                    </div>
+
+                    {/* Mode de transport */}
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Mode de transport</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setModeTransport('A_PIED')}
+                          className={`flex items-center justify-center gap-2 py-3 rounded-xl border font-bold text-[10px] uppercase tracking-widest transition-all ${
+                            modeTransport === 'A_PIED'
+                              ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
+                              : (effectiveDarkMode ? 'bg-white/5 border-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 border-slate-200 text-slate-650 hover:bg-slate-200')
+                          }`}
+                        >
+                          🚶‍♂️ À pied
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModeTransport('EN_VOITURE')}
+                          className={`flex items-center justify-center gap-2 py-3 rounded-xl border font-bold text-[10px] uppercase tracking-widest transition-all ${
+                            modeTransport === 'EN_VOITURE'
+                              ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
+                              : (effectiveDarkMode ? 'bg-white/5 border-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 border-slate-200 text-slate-650 hover:bg-slate-200')
+                          }`}
+                        >
+                          🚑 En voiture
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Temps de trajet limite */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Temps de trajet max</label>
+                        <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">{maxDuration} min</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[5, 10, 15].map((time) => (
+                          <button
+                            key={time}
+                            type="button"
+                            onClick={() => setMaxDuration(time)}
+                            className={`py-2 rounded-lg border font-black text-[9px] uppercase tracking-widest transition-all ${
+                              maxDuration === time
+                                ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm'
+                                : (effectiveDarkMode ? 'bg-white/5 border-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100')
+                            }`}
+                          >
+                            {time} min
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Bouton d'action de recherche */}
+                    <button
+                      type="button"
+                      onClick={handleSearchRestos}
+                      disabled={searchLoading}
+                      className="w-full py-3.5 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 disabled:opacity-55 text-white font-extrabold text-[10px] uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      {searchLoading ? (
+                        <Loader2 className="animate-spin font-bold" size={14} />
+                      ) : (
+                        "🔍 Trouver des restaurants"
+                      )}
+                    </button>
+
+                    {/* Gestion du loading */}
+                    {searchLoading && (
+                      <div className="flex flex-col items-center justify-center py-6 px-4 gap-3 bg-indigo-500/5 dark:bg-white/5 border border-indigo-500/10 dark:border-white/10 rounded-2xl animate-pulse">
+                        <Loader2 size={24} className="animate-spin text-indigo-500" />
+                        <span className="text-[10px] font-black uppercase tracking-[0.1em] text-indigo-500 text-center">
+                          ⏳ Recherche en cours à votre position réelle...
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Gestion des erreurs */}
+                    {error && (
+                      <div className="p-3 bg-rose-500/10 dark:bg-rose-500/20 border border-rose-500/30 dark:border-rose-500/40 text-rose-600 dark:text-rose-400 rounded-xl text-[9px] font-extrabold uppercase tracking-wider text-center">
+                        ⚠️ {error}
+                      </div>
+                    )}
+
+                    {/* Liste des restos en format scrollable */}
+                    {!searchLoading && suggestedRestaurants.length > 0 && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest block">
+                            {suggestedRestaurants.some(r => r.isFallback) ? "Suggestions Proximité GPS" : "Suggestions Gemini + AI"} ({suggestedRestaurants.length})
+                          </label>
+                          {suggestedRestaurants.some(r => r.isFallback) && (
+                            <span className="text-[7px] font-black bg-indigo-500/10 dark:bg-white/10 text-indigo-400 border border-indigo-500/20 px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse">
+                              📡 Mode Proximité
+                            </span>
+                          )}
+                        </div>
+                        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+                          {suggestedRestaurants.map((resto: any, idx: number) => (
+                            <div
+                              key={idx}
+                              className={`p-4 rounded-2xl border transition-all ${
+                                resto.hasParking 
+                                  ? 'bg-indigo-600/15 border-indigo-500/40 text-slate-900 dark:text-white font-medium shadow-sm' 
+                                  : (effectiveDarkMode ? 'bg-slate-800/80 border-white/5 text-white' : 'bg-slate-50 border-slate-200/60 text-slate-900')
+                              }`}
+                            >
+                              <div className="flex justify-between items-start gap-2">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[12px] font-black tracking-tight">{resto.name}</span>
+                                    {resto.hasParking && (
+                                      <span className="bg-emerald-600 text-white font-black text-[7px] uppercase tracking-widest px-1.5 py-0.5 rounded">
+                                        🅿️ Parking OK
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">{resto.type}</span>
+                                  {resto.address && (
+                                    <span className="text-[8px] text-slate-400 dark:text-slate-500 block max-w-[180px] truncate">{resto.address}</span>
+                                  )}
+                                </div>
+                                <div className="flex flex-col items-end gap-1.5 min-w-[70px]">
+                                  {resto.rating && (
+                                    <div className="flex items-center gap-0.5 text-amber-500">
+                                      <Star size={10} fill="currentColor" />
+                                      <span className="text-[9px] font-black">{resto.rating}</span>
+                                    </div>
+                                  )}
+                                  {resto.distanceMinutes !== undefined && (
+                                    <span className="text-[9px] font-extrabold text-indigo-500 dark:text-indigo-400">
+                                      ⏱️ {resto.distanceMinutes} min
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex justify-end mt-2 pt-2 border-t border-dashed border-slate-300/40 dark:border-white/5">
+                                <button
+                                  type="button"
+                                  onClick={() => window.open(resto.mapsUri, '_blank')}
+                                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[8px] font-black uppercase tracking-widest rounded-lg shadow-sm transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
+                                >
+                                  📍 Y ALLER
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <button 
                   onClick={handleConfirmBreak} 
                   className="w-full py-6 rounded-[28px] bg-indigo-600 text-white font-black uppercase tracking-[0.2em] shadow-[0_20px_40px_rgba(79,70,229,0.3)] active:scale-95 transition-all flex items-center justify-center gap-3 border border-indigo-400/50"
@@ -2556,61 +4218,48 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {showVehicleModal && (
-          <div className="fixed inset-0 z-[500] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fadeIn">
-            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onClick={() => setShowVehicleModal(false)} />
-            <div className={`relative w-full max-w-lg ${effectiveDarkMode ? 'bg-slate-900' : 'bg-white'} rounded-t-[40px] sm:rounded-[40px] p-8 shadow-2xl animate-slideUp overflow-hidden`}>
-              <div className="flex justify-between items-center mb-8">
-                <div>
-                  <h3 className={`text-xl font-black uppercase tracking-widest ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>Choisir le véhicule</h3>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Sélectionnez le type pour aujourd'hui</p>
-                </div>
-                <button onClick={() => setShowVehicleModal(false)} className={`w-10 h-10 rounded-full flex items-center justify-center ${effectiveDarkMode ? 'bg-white/5 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>
-                  <X size={22} />
-                </button>
-              </div>
 
-              <div className="grid grid-cols-1 gap-4 mb-8">
-                {[
-                  { id: 'ASSU', label: 'ASSU', sub: 'Ambulance SMUR', icon: <Ambulance size={24} />, img: 'https://images.unsplash.com/photo-1587748661673-d15d543b3a2a?auto=format&fit=crop&q=80&w=300' },
-                  { id: 'AMBU', label: 'AMBU', sub: 'Ambulance Privée', icon: <Activity size={24} />, img: 'https://images.unsplash.com/photo-1612277795421-9bc7706a4a34?auto=format&fit=crop&q=80&w=300' },
-                  { id: 'VSL', label: 'VSL', sub: 'Véhicule Sanitaire', icon: <Car size={24} />, img: 'https://images.unsplash.com/photo-1494976388531-d1058494cdd8?auto=format&fit=crop&q=80&w=300' }
-                ].map((v) => (
+
+        {showCancelDayModal && (
+          <div className="fixed inset-0 z-[500] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fadeIn">
+            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onClick={() => setShowCancelDayModal(false)} />
+            <div className={`relative w-full max-w-md ${effectiveDarkMode ? 'bg-slate-900 border-white/5' : 'bg-white border-slate-100'} rounded-t-[32px] sm:rounded-[32px] p-6 sm:p-8 shadow-2xl animate-slideUp overflow-hidden border`}>
+              {/* Contenu de la Pop-up */}
+              <div className="flex flex-col items-center text-center gap-4">
+                <div className="w-16 h-16 rounded-3xl bg-rose-500/10 text-rose-500 flex items-center justify-center shadow-inner">
+                  <Trash size={28} className="text-rose-500" />
+                </div>
+                <div>
+                  <h3 className={`text-lg font-black uppercase tracking-wider ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Supprimer la journée ?
+                  </h3>
+                  <p className={`text-xs font-semibold leading-relaxed mt-2 ${effectiveDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+                    Voulez-vous vraiment supprimer cette journée en cours du planning ? Toutes les heures et pauses saisies aujourd'hui seront effacées de la base de données.
+                  </p>
+                </div>
+                
+                <div className="flex w-full gap-3 mt-4">
                   <button
-                    key={v.id}
-                    onClick={() => {
-                      setSelectedVehicleType(v.id);
-                      setShowVehicleModal(false);
-                      handleStartService(null, null, v.id);
-                    }}
-                    className={`group relative overflow-hidden flex items-center gap-5 p-5 rounded-[28px] border-2 transition-all ${
-                      selectedVehicleType === v.id 
-                        ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10' 
-                        : (effectiveDarkMode ? 'border-white/5 bg-white/5 hover:border-white/10' : 'border-slate-100 bg-slate-50 hover:border-slate-200')
-                    }`}
+                    onClick={() => setShowCancelDayModal(false)}
+                    className={`flex-1 py-3 px-4 ${
+                      effectiveDarkMode 
+                        ? 'bg-white/5 hover:bg-white/10 text-slate-300' 
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    } rounded-xl text-xs font-black uppercase tracking-widest transition-all`}
                   >
-                    <div className="relative w-16 h-16 rounded-2xl overflow-hidden flex-shrink-0 shadow-md">
-                       <img src={v.img} alt={v.label} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
-                       <div className={`absolute inset-0 flex items-center justify-center ${selectedVehicleType === v.id ? 'bg-indigo-600/20' : 'bg-black/20'}`}>
-                         <div className="text-white drop-shadow-lg">{v.icon}</div>
-                       </div>
-                    </div>
-                    <div className="flex flex-col items-start flex-1 text-left">
-                      <span className={`text-base font-black tracking-widest ${effectiveDarkMode ? 'text-white' : 'text-slate-900'}`}>{v.label}</span>
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{v.sub}</span>
-                    </div>
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                      selectedVehicleType === v.id ? 'bg-indigo-600 text-white' : (effectiveDarkMode ? 'bg-white/5 text-transparent' : 'bg-white text-transparent')
-                    }`}>
-                      <Check size={16} strokeWidth={3} />
-                    </div>
+                    Annuler
                   </button>
-                ))}
+                  <button
+                    onClick={async () => {
+                      setShowCancelDayModal(false);
+                      await handleAnnulerJournee(true);
+                    }}
+                    className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-rose-900/20 active:scale-95"
+                  >
+                    Supprimer
+                  </button>
+                </div>
               </div>
-              
-              <p className="text-center text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] opacity-40">
-                Vous pourrez le modifier plus tard dans l'agenda
-              </p>
             </div>
           </div>
         )}
@@ -2618,10 +4267,26 @@ const App: React.FC = () => {
     );
   };
 
+  const handleSplashComplete = useCallback(() => {
+    setShowSplash(false);
+    sessionStorage.setItem('ambuflow_splash_shown', 'true');
+  }, []);
+
   return (
     <ErrorBoundary>
-      {(!isAuthReady || authLoading) ? (
-        <div className={`fixed inset-0 z-[200] flex flex-col items-center justify-center p-8 ${effectiveDarkMode ? 'bg-slate-950 text-white' : 'bg-white text-slate-900'}`}>
+      <AnimatePresence mode="wait">
+        {showSplash && (
+          <SplashScreen 
+            key="splash-screen"
+            onComplete={handleSplashComplete} 
+          />
+        )}
+      </AnimatePresence>
+
+      {!showSplash && (
+        <>
+          {(!isAuthReady || authLoading) ? (
+            <div className={`fixed inset-0 z-[200] flex flex-col items-center justify-center p-8 ${effectiveDarkMode ? 'bg-slate-950 text-white' : 'bg-white text-slate-900'}`}>
           <div className="relative mb-12">
             <div className="w-16 h-16 border-4 border-indigo-500/20 rounded-full animate-spin border-t-indigo-500" />
             <div className="absolute inset-0 flex items-center justify-center">
@@ -2664,10 +4329,8 @@ const App: React.FC = () => {
             localStorage.setItem('ambuflow_is_guest', 'true');
           }} 
         />
-      ) : !onboarded ? (
-        <Onboarding onComplete={handleOnboardingComplete} userEmail={user?.email} />
       ) : (
-        <div className={`min-h-screen transition-colors duration-500 font-sans pb-28 flex flex-col relative ${effectiveDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-[#F8FAFC] text-slate-900'}`}>
+        <div className={`min-h-screen w-full overflow-x-hidden transition-colors duration-500 font-sans pb-28 flex flex-col relative ${effectiveDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-gradient-to-br from-[#FDFBFB] to-[#EBEDEE] text-slate-900'}`}>
         <AnimatePresence mode="wait">
           <motion.div
             key="main-app"
@@ -2675,7 +4338,7 @@ const App: React.FC = () => {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 1, ease: "easeInOut" }}
-            className="flex-1 flex flex-col"
+            className="flex-1 flex flex-col w-full"
           >
             <style>{`
               @keyframes pulse-border {
@@ -2695,6 +4358,11 @@ const App: React.FC = () => {
                 50% { opacity: 0.7; }
               }
               .animate-blink-red { animation: blink-red 1s infinite; }
+              @keyframes pulse-subtle {
+                0%, 100% { opacity: 1; transform: scale(1); }
+                50% { opacity: 0.96; transform: scale(0.995); }
+              }
+              .animate-pulse-subtle { animation: pulse-subtle 2.5s ease-in-out infinite; }
             `}</style>
             <div className="fixed top-0 left-0 right-0 z-[200] pointer-events-none">
               <div className="flex flex-col gap-3 w-full max-w-md mx-auto px-6 pt-6">
@@ -2752,11 +4420,16 @@ const App: React.FC = () => {
                             👋
                           </motion.span>
                         </h1>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <Logo size={24} className="-rotate-3" />
                           <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.25em]">
                             {companyName || "AmbuFlow"}
                           </p>
+                          {isQuotaExceeded && (
+                            <span className="bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[7px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full flex items-center gap-1 animate-pulse">
+                              <span className="w-1 h-1 bg-amber-500 rounded-full" /> Sauvegarde Locale (Quota Cloud)
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2765,7 +4438,11 @@ const App: React.FC = () => {
                         setShowNotificationPanel(true);
                         setNotifications(prev => prev.map(n => ({ ...n, read: true })));
                       }}
-                      className={`p-3 rounded-2xl relative border ${effectiveDarkMode ? 'bg-slate-800/50 border-white/10' : 'bg-slate-100/50 border-slate-200'} backdrop-blur-md cursor-pointer group hover:scale-105 active:scale-95 transition-all`}
+                      className={`p-3 rounded-full relative border backdrop-blur-md cursor-pointer group hover:scale-105 active:scale-95 transition-all shadow-sm ${
+                        effectiveDarkMode 
+                          ? 'bg-slate-800/50 border-white/10' 
+                          : 'bg-white/60 border-white/40'
+                      }`}
                     >
                       <motion.div
                         animate={unreadCount > 0 ? {
@@ -2807,10 +4484,10 @@ const App: React.FC = () => {
                 />
               )}
             </AnimatePresence>
-            <main className="flex-1 max-w-xl mx-auto w-full">
+            <main className={`flex-1 w-full mx-auto flex flex-col border-none shadow-none focus:outline-none ${activeTab === 'home' ? 'max-w-7xl px-4 sm:px-6' : 'max-w-2xl px-4 sm:px-6'}`}>
               {activeTab === 'home' && renderHome()}
-              {activeTab === 'planning' && <PlanningTab darkMode={effectiveDarkMode} status={status} setStatus={setStatus} onAutoStartService={handleAutoStartService} onEndServiceSilently={stopServiceSilently} appCurrentTime={currentTime} shifts={shifts} setShifts={setShifts} weekendDays={weekendDays} setWeekendDays={setWeekendDays} activeShiftId={activeShiftId} setActiveShiftId={setActiveShiftId} availableVehicles={['ASSU', 'AMBU', 'VSL']} hourlyRate={effectiveHourlyRate} setActiveTab={setActiveTab} workRegime={workRegime} cpCalculationMode={cpCalculationMode as '25' | '30'} modulationWeeks={modulationWeeks} modulationStartDate={modulationStartDate} contractStartDate={contractStartDate} leaveBalances={leaveBalances} initialCpBalance={initialCpBalance} setInitialCpBalance={setInitialCpBalance} />}
-              {activeTab === 'paie' && <PaieTab logs={logs} darkMode={effectiveDarkMode} hasTaxiCard={hasTaxiCard} hourlyRate={effectiveHourlyRate} weeklyContractHours={weeklyContractHours} overtimeMode={overtimeMode} payRateMode={payRateMode} workRegime={workRegime} shifts={shifts} cpCalculationMode={cpCalculationMode as '25' | '30'} />}
+              {activeTab === 'planning' && <PlanningTab darkMode={effectiveDarkMode} status={status} setStatus={setStatus} onAutoStartService={handleAutoStartService} onEndServiceSilently={stopServiceSilently} appCurrentTime={currentTime} shifts={shifts} setShifts={setShifts} weekendDays={weekendDays} setWeekendDays={setWeekendDays} activeShiftId={activeShiftId} setActiveShiftId={setActiveShiftId} availableVehicles={availableVehicles} hourlyRate={effectiveHourlyRate} setActiveTab={setActiveTab} workRegime={workRegime} cpCalculationMode={cpCalculationMode as '25' | '30'} modulationWeeks={modulationWeeks} modulationStartDate={modulationStartDate} contractStartDate={contractStartDate} leaveBalances={leaveBalances} initialCpBalance={initialCpBalance} setInitialCpBalance={setInitialCpBalance} primaryRole={primaryRole} onClearAllShifts={clearAllShifts} onDeleteShift={deleteShift} />}
+              {activeTab === 'paie' && <PaieTab logs={logs} darkMode={effectiveDarkMode} hasTaxiCard={hasTaxiCard} hourlyRate={effectiveHourlyRate} weeklyContractHours={weeklyContractHours} payRateMode={payRateMode} workRegime={workRegime} shifts={shifts} cpCalculationMode={cpCalculationMode as '25' | '30'} periodStats={periodStats} />}
               {activeTab === 'profile' && <ProfileTab 
                 darkMode={effectiveDarkMode} 
                 userName={userName} 
@@ -2866,8 +4543,6 @@ const App: React.FC = () => {
                 setModulationStartDate={setModulationStartDate}
                 weeklyContractHours={weeklyContractHours}
                 setWeeklyContractHours={setWeeklyContractHours}
-                overtimeMode={overtimeMode}
-                setOvertimeMode={setOvertimeMode}
                 payRateMode={payRateMode}
                 setPayRateMode={setPayRateMode}
                 pushEnabled={pushEnabled}
@@ -3004,7 +4679,9 @@ const App: React.FC = () => {
           )}
         </AnimatePresence>
       </div>
-      )}
+    )}
+  </>
+)}
     </ErrorBoundary>
   );
 };

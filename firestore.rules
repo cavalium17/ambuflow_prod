@@ -1,68 +1,96 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // 0. Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
     // ===============================================================
-    // Helper Functions
+    // Global Helper Functions
     // ===============================================================
-    function isAuthenticated() {
+    function isSignedIn() {
       return request.auth != null;
     }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
     function isOwner(userId) {
-      return (isAuthenticated() && request.auth.uid == userId) || userId == 'local_user';
+      return (isSignedIn() && request.auth.uid == userId) || userId == 'local_user';
     }
     
     function isAdmin() {
-      return isAuthenticated() && (
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
-        (request.auth.token.email == "adrien.brunelliere@gmail.com" && request.auth.token.email_verified == true)
+      return isSignedIn() && (
+        request.auth.token.get('email', '') == "adrien.brunelliere@gmail.com" && 
+        request.auth.token.get('email_verified', false) == true
       );
     }
     
-    function isBecomingAdmin() {
-      return request.resource.data.get('role', '') == 'admin';
+    function incoming() {
+      return request.resource.data;
     }
     
-    function hasOnlyAllowedFields(fields) {
-      return request.resource.data.keys().hasOnly(fields);
+    function existing() {
+      return resource.data;
     }
 
     // ===============================================================
-    // Domain Validators
+    // Entity Validators
     // ===============================================================
     function isValidUser(data) {
-      return (
-        (!('userName' in data) || (data.userName is string && data.userName.size() < 100)) &&
-        (!('firstName' in data) || (data.firstName is string && data.firstName.size() < 100)) &&
-        (!('lastName' in data) || (data.lastName is string && data.lastName.size() < 100)) &&
-        (!('companyName' in data) || (data.companyName is string && data.companyName.size() < 200)) &&
-        (!('jobTitle' in data) || (data.jobTitle is string && data.jobTitle.size() < 100)) &&
-        (!('onboarded' in data) || (data.onboarded is bool)) &&
-        (!('roles' in data) || (data.roles is list)) &&
-        (!('primaryRole' in data) || (data.primaryRole is string)) &&
-        (!('status' in data) || (data.status is string)) &&
-        (!('notifications' in data) || (data.notifications is list)) &&
-        (!('email' in data) || (data.email is string))
-      );
+      return data.keys().hasAll(['userName']) &&
+        data.userName is string && data.userName.size() <= 100 &&
+        (!('firstName' in data) || (data.firstName is string || data.firstName == null)) &&
+        (!('lastName' in data) || (data.lastName is string || data.lastName == null)) &&
+        (!('email' in data) || (data.email is string || data.email == null)) &&
+        (!('roles' in data) || (data.roles is list || data.roles == null)) &&
+        (!('onboarded' in data) || (data.onboarded is bool || data.onboarded is string || data.onboarded == null)) &&
+        (!('cpCalculationMode' in data) || (data.cpCalculationMode is string || data.cpCalculationMode is number || data.cpCalculationMode == null)) &&
+        (!('overtimeMode' in data) || (data.overtimeMode is string || data.overtimeMode == null)) &&
+        (!('payRateMode' in data) || (data.payRateMode is string || data.payRateMode == null)) &&
+        (!('weeklyContractHours' in data) || (data.weeklyContractHours is string || data.weeklyContractHours is number || data.weeklyContractHours == null)) &&
+        (!('initialCpBalance' in data) || (data.initialCpBalance is string || data.initialCpBalance is number || data.initialCpBalance == null)) &&
+        (!('heureEmbauchePrevue' in data) || (data.heureEmbauchePrevue is string || data.heureEmbauchePrevue == null)) &&
+        (!('soldeTotalCP' in data) || (data.soldeTotalCP is string || data.soldeTotalCP is number || data.soldeTotalCP == null)) &&
+        (!('joursCPPrisCycle' in data) || (data.joursCPPrisCycle is string || data.joursCPPrisCycle is number || data.joursCPPrisCycle == null)) &&
+        (!('hourlyRate' in data) || (data.hourlyRate is string || data.hourlyRate is number || data.hourlyRate == null)) &&
+        (!('status' in data) || (data.status is string || data.status == null));
+    }
+    
+    function isValidShift(data) {
+      return data.keys().hasAll(['id', 'date', 'startTime', 'endTime', 'userId']) &&
+        isValidId(data.id) &&
+        data.date is string &&
+        data.startTime is string &&
+        data.endTime is string &&
+        data.userId is string &&
+        data.userId == request.auth.uid;
     }
 
     // ===============================================================
-    // Rules
+    // Collection Rules
     // ===============================================================
+    
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create, update: if isOwner(userId) && isValidUser(request.resource.data) && (!isBecomingAdmin() || isAdmin());
-      allow delete: if isOwner(userId);
-    }
-
-    match /test/{docId} {
-      allow read: if true;
+      allow create: if isOwner(userId) && isValidUser(incoming()) && incoming().get('role', 'user') != 'admin';
+      allow update: if isOwner(userId) && isValidUser(incoming()) && 
+                    (!('role' in incoming().diff(existing()).affectedKeys()) || isAdmin());
+      allow delete: if isOwner(userId) || isAdmin();
     }
 
     match /shifts/{shiftId} {
       allow read: if isOwner(resource.data.userId) || isAdmin();
-      allow create: if isOwner(request.resource.data.userId);
-      allow update, delete: if isOwner(resource.data.userId);
+      allow create: if isSignedIn() && isValidShift(incoming());
+      allow update: if isSignedIn() && isOwner(existing().userId) && isValidShift(incoming()) && incoming().userId == existing().userId;
+      allow delete: if isSignedIn() && isOwner(existing().userId);
+    }
+    
+    // Internal probe support
+    match /test/connection {
+      allow read: if true;
     }
   }
 }

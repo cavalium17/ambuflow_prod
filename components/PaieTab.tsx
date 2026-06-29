@@ -24,7 +24,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { Shift, Break } from '../types';
-import { getFrenchPublicHolidays, isSundayOrHoliday } from '../src/lib/dateUtils';
+import { getFrenchPublicHolidays, isSundayOrHoliday, parseLocalDate } from '../src/lib/dateUtils';
 
 
 
@@ -62,13 +62,13 @@ const MonthAccordion = ({ month, displayMode, darkMode, cardClass, isDefaultOpen
   const monthName = month.startDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
   
   return (
-    <div className={`rounded-[32px] border overflow-hidden transition-all duration-300 mb-4 ${
-      darkMode ? 'bg-slate-900/30 border-white/5' : 'bg-slate-50 border-slate-100'
+    <div className={`rounded-[32px] border overflow-hidden transition-all duration-300 mb-4 backdrop-blur-xl ${
+      darkMode ? 'bg-slate-900/40 border-white/5 shadow-2xl shadow-black/20' : 'bg-white/60 border-white/40 shadow-xl shadow-slate-200/30'
     }`}>
       <button 
         onClick={() => setIsOpen(!isOpen)}
         className={`w-full p-6 flex items-center justify-between text-left transition-colors ${
-          isOpen ? (darkMode ? 'bg-white/5' : 'bg-white') : ''
+          isOpen ? (darkMode ? 'bg-white/5' : 'bg-white/40') : ''
         }`}
       >
         <div className="flex items-center gap-4">
@@ -219,11 +219,11 @@ const WeekAccordion = ({ week, displayMode, darkMode, cardClass }: any) => {
                       <span className="text-xs font-black">{shift.calc.effective}</span>
                     </div>
                     <div className="flex flex-col">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">Indemnités</span>
-                      <div className="flex flex-wrap gap-1">
+                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-tighter">Indemnités</span>
+                      <div className="flex flex-wrap gap-1 mt-0.5">
                         {shift.calc.allowanceLabels.length > 0 ? shift.calc.allowanceLabels.map((l: string, i: number) => (
-                          <span key={i} className="text-[8px] bg-indigo-500/10 text-indigo-500 px-1 rounded-sm">{l}</span>
-                        )) : <span className="text-xs font-black">0.00 €</span>}
+                          <span key={i} className={`text-[8px] px-1 rounded-sm border ${darkMode ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{l}</span>
+                        )) : <span className="text-[10px] font-black text-slate-300">Aucune</span>}
                       </div>
                     </div>
                     <div className="flex flex-col text-right">
@@ -247,11 +247,12 @@ interface PaieTabProps {
   hasTaxiCard?: boolean;
   hourlyRate: string;
   weeklyContractHours: number;
-  overtimeMode: 'weekly' | 'biweekly' | 'modulation' | 'annualized';
+  overtimeMode?: 'weekly' | 'biweekly' | 'modulation' | 'annualized';
   payRateMode: '100_percent' | '90_percent';
   workRegime: string;
   shifts: Shift[];
   cpCalculationMode?: '25' | '30';
+  periodStats?: any;
 }
 
 const PaieTab: React.FC<PaieTabProps> = ({ 
@@ -263,7 +264,8 @@ const PaieTab: React.FC<PaieTabProps> = ({
   payRateMode,
   workRegime, 
   shifts,
-  cpCalculationMode = '25'
+  cpCalculationMode = '25',
+  periodStats
 }) => {
   const [displayMode, setDisplayMode] = useState<'net' | 'brut'>('net');
 
@@ -320,7 +322,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
 
   const ALLOWANCES = {
     REPAS: 15.54,
-    REPAS_UNIQUE: 9.59,
+    REPAS_UNIQUE: 9.81, // Mis à jour selon demande (9.81€ au lieu de 9.59€)
     SPECIALE: 4.34,
     DIMANCHE_FERIE: 23.90
   };
@@ -328,7 +330,39 @@ const PaieTab: React.FC<PaieTabProps> = ({
   const parsedHourlyRate = parseFloat(hourlyRate) || 11.65;
 
   const calculateShiftStats = (shift: Shift) => {
+    if (shift.isFerieChome || shift.isCP || (shift.isLeave && shift.leaveType === 'CP')) {
+      const effectiveMin = 420; // 7h * 60m
+      const grossEarnings = 7 * parsedHourlyRate;
+      const netEarnings = grossEarnings * NET_COEFFICIENT;
+
+      return {
+        amplitude: "00h 00m",
+        effective: "07h 00m",
+        effectiveMin,
+        totalAllowances: 0,
+        allowanceLabels: [shift.isFerieChome ? 'FÉRIÉ CHOMÉ' : 'CONGÉ PAYÉ'],
+        grossEarnings,
+        netEarnings,
+        vehicle: shift.isFerieChome ? 'FÉRIÉ' : 'CONGÉ'
+      };
+    }
+
     if (shift.isLeave) {
+      if (shift.leaveType === 'SOLIDARITE' || shift.isUnpaidButCounted) {
+        const hours = shift.hours || 5;
+        const effectiveMin = Math.round(hours * 60);
+        return {
+          amplitude: "00h 00m",
+          effective: `${Math.floor(effectiveMin / 60)}h ${effectiveMin % 60}m`,
+          effectiveMin,
+          totalAllowances: 0,
+          allowanceLabels: ['SOLIDARITÉ'],
+          grossEarnings: 0,
+          netEarnings: 0,
+          vehicle: 'SOLIDARITÉ'
+        };
+      }
+
       const baseHours = weeklyContractHours || 35;
       const hoursPerDay = baseHours / (cpCalculationMode === '25' ? 5 : 6);
       const effectiveMin = Math.round(hoursPerDay * 60);
@@ -363,28 +397,54 @@ const PaieTab: React.FC<PaieTabProps> = ({
     let amplitudeMin = endMin - startMin;
     if (amplitudeMin < 0) amplitudeMin += 24 * 60;
 
-    let totalBreaksMin = 0;
-    const hasExternalBreak = shift.breaks?.some(b => b.location === 'Extérieur');
-
-    if (shift.breaks) {
-      shift.breaks.forEach(b => {
-        totalBreaksMin += Number(b.duration) || 0;
-      });
-    }
-
-    const effectiveMin = Math.max(0, isNaN(amplitudeMin) ? 0 : amplitudeMin - (isNaN(totalBreaksMin) ? 0 : totalBreaksMin));
     const safeAmplitudeMin = isNaN(amplitudeMin) ? 0 : amplitudeMin;
-    const safeEffectiveMin = isNaN(effectiveMin) ? 0 : effectiveMin;
 
-    const remunerationCoefficient = payRateMode === '90_percent' ? 0.9 : 1.0;
-    const paidMin = safeEffectiveMin * remunerationCoefficient;
-    const effectiveHours = paidMin / 60;
+    let effectiveMin = 0;
+    if (payRateMode === '90_percent') {
+      // Mode 90% (Coefficient) : Amplitude * 0.90
+      effectiveMin = Math.round(safeAmplitudeMin * 0.9);
+    } else {
+      // Mode 100% au réel : Amplitude - Pauses
+      let totalBreaksMin = 0;
+      if (shift.breaks) {
+        shift.breaks.forEach(b => {
+          totalBreaksMin += Number(b.duration) || 0;
+        });
+      }
+      effectiveMin = Math.max(0, safeAmplitudeMin - totalBreaksMin);
+    }
     
-    const baseGrossEarnings = effectiveHours * parsedHourlyRate;
+    const safeEffectiveMin = isNaN(effectiveMin) ? 0 : Math.round(effectiveMin);
+
+    // Calcul des Heures de Nuit (22h - 05h) -> Majoration 10%
+    const calculateOverlap = (s1: number, e1: number, s2: number, e2: number) => {
+      return Math.max(0, Math.min(e1, e2) - Math.max(s1, s2));
+    };
+
+    const sStart = startMin;
+    const sEnd = endMin < startMin ? endMin + 1440 : endMin;
+    
+    // Plage de nuit: 22h (1320) à 5h (300+1440 = 1740 ou 300)
+    // On vérifie sur deux cycles si besoin
+    let nightMins = 0;
+    // Cycle 1: 00:00 - 05:00 (0 - 300)
+    nightMins += calculateOverlap(sStart, sEnd, 0, 300);
+    // Cycle 1: 22:00 - 24:00 (1320 - 1440)
+    nightMins += calculateOverlap(sStart, sEnd, 1320, 1440);
+    // Cycle 2: 00:00 - 05:00 (1440 - 1740)
+    nightMins += calculateOverlap(sStart, sEnd, 1440, 1740);
+    // Cycle 2: 24h+22h (2760 - 2880) - unlikely but for safety
+    nightMins += calculateOverlap(sStart, sEnd, 2760, 2880);
+
+    const nightBonusAmount = (nightMins / 60) * (parsedHourlyRate * 0.1);
+
+    const baseGrossEarnings = (safeEffectiveMin / 60) * parsedHourlyRate + nightBonusAmount;
 
     // Logique des indemnités
     let totalAllowances = 0;
     let allowanceLabels: string[] = [];
+
+    const hasExternalBreak = shift.breaks?.some(b => b.location === 'Extérieur');
 
     // 1. Indemnité de repas (15.54€)
     if (startMin <= 660 && (endMin >= 870 || endMin < startMin) && hasExternalBreak) {
@@ -392,17 +452,16 @@ const PaieTab: React.FC<PaieTabProps> = ({
       allowanceLabels.push("Repas");
     }
 
-    // 2. Indemnité de repas unique (9.59€)
-    const sStart = startMin;
-    const sEnd = endMin < startMin ? endMin + 1440 : endMin;
-    const nightOverlapStart = Math.max(sStart, 1320);
-    const nightOverlapEnd = Math.min(sEnd, 1860);
-    if (nightOverlapEnd - nightOverlapStart >= 240) {
+    // 2. Indemnité de repas unique / Casse-croûte nuit (9.81€)
+    // Travail au moins 4h entre 22h et 07h
+    let overlapNightSnack = 0;
+    overlapNightSnack += calculateOverlap(sStart, sEnd, 1320, 1860); // 22h - 7h (07:00 is 1440+420=1860? No, 7*60=420. 1440+420=1860)
+    if (overlapNightSnack >= 240) {
       totalAllowances += ALLOWANCES.REPAS_UNIQUE;
-      allowanceLabels.push("Repas Unique");
+      allowanceLabels.push("Nuit (9.81€)");
     }
 
-    // 3. Indemnité spéciale (Casse-croûte) (4.34€)
+    // 3. Indemnité spéciale (Casse-croûte jour) (4.34€)
     if (hasExternalBreak && (startMin < 300 || (endMin > 1260 && endMin <= 1440))) {
       totalAllowances += ALLOWANCES.SPECIALE;
       allowanceLabels.push("Spéciale");
@@ -421,6 +480,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
       amplitude: `${Math.floor(safeAmplitudeMin / 60)}h ${safeAmplitudeMin % 60}m`,
       effective: `${Math.floor(safeEffectiveMin / 60)}h ${safeEffectiveMin % 60}m`,
       effectiveMin: safeEffectiveMin,
+      nightMins,
       totalAllowances,
       allowanceLabels,
       grossEarnings,
@@ -442,7 +502,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
     let prevMonthBrutAtSameDay = 0;
 
     const shiftResults = shifts
-      .filter(s => s.isLeave || s.end !== '--:--')
+      .filter(s => s.isLeave || s.isFerieChome || s.isCP || s.end !== '--:--')
       .map(s => ({ ...s, calc: calculateShiftStats(s) }))
       .filter(s => s.calc !== null);
 
@@ -451,7 +511,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
 
     shiftResults.forEach(s => {
       if (s.calc) {
-        const date = new Date(s.day);
+        const date = parseLocalDate(s.day);
         const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
         
         if (date.getMonth() === prevMonthIdx && date.getFullYear() === prevYearIdx) {
@@ -541,7 +601,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
       totalMonthlyNet: (currentMonthData?.totalNet || 0) + taxiBonusNet,
       prevMonthlyBrut: (prevMonthData?.totalBrut || 0) + taxiBonusBrut,
       prevMonthlyNet: (prevMonthData?.totalNet || 0) + taxiBonusNet,
-      totalEffectiveHours: (currentMonthData?.totalEffectiveMin || 0) / 60,
+      totalEffectiveMin: currentMonthData?.totalEffectiveMin || 0,
       totalAllowances: currentMonthData?.totalAllowances || 0,
       isPositiveTrend: currentMonthData?.isPositiveTrend ?? true,
       isPositiveTrendBrut,
@@ -549,30 +609,32 @@ const PaieTab: React.FC<PaieTabProps> = ({
     };
   }, [shifts, hasTaxiCard, parsedHourlyRate, weeklyContractHours, overtimeMode, payRateMode, cpCalculationMode]);
 
-  const cardClass = `p-6 rounded-[32px] border transition-all duration-300 ${
-    darkMode ? 'bg-slate-900 border-white/5 shadow-2xl shadow-black/40' : 'bg-white border-slate-100 shadow-xl shadow-slate-200/40'
+  const cardClass = `p-6 rounded-[32px] border transition-all duration-300 backdrop-blur-xl ${
+    darkMode ? 'bg-slate-900/60 border-white/5 shadow-2xl' : 'bg-white/60 border-white/40 shadow-xl'
   }`;
 
   return (
     <div className="p-5 space-y-6 animate-fadeIn pb-32">
       <div className="flex justify-center items-center gap-3">
-        <div className={`p-1 rounded-2xl flex items-center gap-1 ${darkMode ? 'bg-slate-900' : 'bg-slate-200/50'}`}>
+        <div className={`p-1.5 rounded-2xl flex items-center gap-1 border backdrop-blur-md ${
+          darkMode ? 'bg-slate-900/40 border-white/5' : 'bg-white/60 border-white/40 shadow-sm'
+        }`}>
           <button 
             onClick={() => setDisplayMode('net')}
-            className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+            className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
               displayMode === 'net' 
-                ? (monthlyStats.isPositiveTrend ? 'bg-emerald-500 text-white shadow-lg' : 'bg-rose-500 text-white shadow-lg') 
-                : 'text-slate-400'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' 
+                : 'text-slate-400 hover:text-slate-600'
             }`}
           >
             Revenu Net
           </button>
           <button 
             onClick={() => setDisplayMode('brut')}
-            className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+            className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
               displayMode === 'brut' 
-                ? 'bg-violet-600 text-white shadow-lg' 
-                : 'text-slate-400'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' 
+                : 'text-slate-400 hover:text-slate-600'
             }`}
           >
             Revenu Brut
@@ -639,7 +701,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
           <div className="flex gap-4 mt-6">
             <div className="flex flex-col">
               <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Heures</span>
-              <span className="text-lg font-black">{Math.floor(monthlyStats.totalEffectiveHours)}h {Math.floor((monthlyStats.totalEffectiveHours % 1) * 60)}m</span>
+              <span className="text-lg font-black">{Math.floor(monthlyStats.totalEffectiveMin / 60)}h {Math.round(monthlyStats.totalEffectiveMin % 60)}m</span>
             </div>
             <div className="w-px h-8 bg-white/10 self-center" />
             <div className="flex flex-col">
@@ -656,6 +718,14 @@ const PaieTab: React.FC<PaieTabProps> = ({
               </>
             )}
           </div>
+          {periodStats && periodStats.cpMinutes > 0 && (
+            <div className="mt-6 pt-4 border-t border-white/10 flex items-center justify-between text-xs text-white/80">
+              <span className="font-semibold tracking-tight uppercase text-[10px]">Indemnités Congés Payés :</span>
+              <span className="font-black font-mono text-amber-300">
+                {Math.floor(periodStats.cpMinutes / 60)}h00 ({periodStats.cpGross.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €)
+              </span>
+            </div>
+          )}
         </div>
         <div className="absolute -right-12 -bottom-12 opacity-10 pointer-events-none">
           {displayMode === 'net' ? (
@@ -702,9 +772,10 @@ const PaieTab: React.FC<PaieTabProps> = ({
           <h4 className="text-[10px] font-black uppercase tracking-widest">Logique des Indemnités (Accords 3085)</h4>
         </div>
         <ul className="text-[10px] font-medium text-slate-500 space-y-1.5 list-disc pl-4">
-          <li><strong>Dimanche & Férié (23,90€ brut) :</strong> Attribué pour tout service débutant un dimanche ou un jour férié.</li>
+          <li><strong>Dimanche & Férié (23,90€ brut) :</strong> Pour tout service débutant dimanche ou férié.</li>
+          <li><strong>Majoration Nuit (+10%) :</strong> Bonus de 10% sur le taux horaire entre 22h00 et 05h00.</li>
+          <li><strong>Panier Nuit (9,81€) :</strong> Min. 4h de service entre 22h et 7h du matin.</li>
           <li><strong>Repas (15,54€) :</strong> Service complet de 11h à 14h30 en déplacement.</li>
-          <li><strong>Repas Unique (9,59€) :</strong> Min. 4h de service entre 22h et 7h du matin.</li>
           <li><strong>Spéciale (4,34€) :</strong> Déplacement + (Début &lt; 5h ou Fin &gt; 21h).</li>
         </ul>
       </div>

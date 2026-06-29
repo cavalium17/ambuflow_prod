@@ -12,7 +12,7 @@ import {
   EyeOff
 } from 'lucide-react';
 import Logo from './Logo';
-import { auth, googleProvider, db } from '../src/firebaseConfig';
+import { auth, googleProvider, db, finalConfig } from '../src/firebaseConfig';
 import { handleFirestoreError, OperationType } from '../src/services/firestoreErrorHandler';
 import { 
   signInWithEmailAndPassword, 
@@ -48,19 +48,26 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
     setError(null);
 
     try {
+      const emailValue = email.trim().toLowerCase();
       if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password);
+        await signInWithEmailAndPassword(auth, emailValue, password);
       } else {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        if (password.length < 6) {
+          setError("Le mot de passe doit contenir au moins 6 caractères.");
+          setLoading(false);
+          return;
+        }
+        const userCredential = await createUserWithEmailAndPassword(auth, emailValue, password);
         const user = userCredential.user;
         
         const userDocRef = doc(db, 'users', user.uid);
         try {
           await setDoc(userDocRef, {
             email: user.email,
+            userName: user.email ? user.email.split('@')[0] : 'Ambulancier',
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
-            onboarded: false
+            onboarded: true
           }, { merge: true });
         } catch (error) {
           handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
@@ -68,12 +75,24 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
       }
       if (onLoginSuccess) onLoginSuccess();
     } catch (err: any) {
-      const commonUserErrors = ['auth/user-not-found', 'auth/wrong-password', 'auth/invalid-credential', 'auth/email-already-in-use'];
+      const commonUserErrors = [
+        'auth/user-not-found', 
+        'auth/wrong-password', 
+        'auth/invalid-credential', 
+        'auth/email-already-in-use',
+        'auth/weak-password',
+        'auth/invalid-email',
+        'auth/operation-not-allowed'
+      ];
+      
       if (!commonUserErrors.includes(err.code)) {
-        console.error("Auth error:", err);
+        console.error("Auth error detail:", err);
       }
       
-      let message = "Une erreur est survenue.";
+      // Log extra details for debugging "Identifiants incorrects" issues
+      console.log(`[Auth Debug] Email: "${email.trim().toLowerCase()}" | Error Code: ${err.code}`);
+      
+      let message = err.message || "Une erreur est survenue.";
       
       if (err.code === 'auth/user-not-found') {
         setShowUserNotFoundModal(true);
@@ -109,7 +128,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
             </div>
           );
         } else {
-          setError("Format d'identifiants non supporté.");
+          setError("Format d'identifiants non supporté ou compte déjà existant.");
         }
         setLoading(false);
         return;
@@ -130,8 +149,16 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
         setIsLogin(true);
         setLoading(false);
         return;
+      } else if (err.code === 'auth/weak-password') {
+        setError("Le mot de passe est trop faible (6 caractères minimum).");
+      } else if (err.code === 'auth/invalid-email') {
+        setError("L'adresse email n'est pas valide.");
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setError("La connexion par email/mot de passe n'est pas activée dans Firebase.");
+      } else {
+        // Fallback with user-friendly mapping if possible or just the message
+        setError(message);
       }
-      setError(message);
     } finally {
       setLoading(false);
     }
@@ -160,7 +187,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
               profileImage: user.photoURL || '',
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
-              onboarded: false
+              onboarded: true
             }, { merge: true });
           } catch (error) {
             handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
@@ -173,10 +200,21 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
       } else if (err.code === 'auth/popup-blocked') {
         setError("Le popup de connexion a été bloqué par votre navigateur.");
       } else if (err.code && err.code.includes('unauthorized-domain')) {
+        const hostname = typeof window !== 'undefined' ? window.location.hostname : 'ce domaine';
         setError(
-          <div className="space-y-1">
-            <p>Domaine non autorisé dans Firebase.</p>
-            <p className="text-[8px] opacity-70">Veuillez ajouter ce domaine aux domaines autorisés dans la console Firebase.</p>
+          <div className="space-y-2 text-left">
+            <p className="font-black uppercase text-[10px] text-rose-600">Domaine non autorisé</p>
+            <p className="text-[10px] opacity-70 leading-relaxed">
+              Le domaine <code className="bg-rose-100 px-1 rounded text-rose-700 font-mono">{hostname}</code> n'est pas autorisé dans votre projet Firebase.
+            </p>
+            <div className="p-2 bg-white/50 rounded-lg border border-rose-200 mt-2">
+              <p className="text-[9px] font-bold text-slate-500 mb-1">Action requise :</p>
+              <ol className="text-[9px] text-slate-600 space-y-1 ml-3 list-decimal">
+                <li>Allez dans la <a href={`https://console.firebase.google.com/project/${finalConfig.projectId}/authentication/settings`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline">Console Firebase</a></li>
+                <li>Onglet "Domaines autorisés"</li>
+                <li>Ajoutez <span className="font-mono bg-slate-100 px-1">{hostname}</span></li>
+              </ol>
+            </div>
           </div>
         );
       } else if (err.code === 'auth/operation-not-allowed') {
@@ -204,7 +242,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
     setLoading(true);
     setError(null);
     try {
-      await sendPasswordResetEmail(auth, email);
+      await sendPasswordResetEmail(auth, email.trim().toLowerCase());
       setResetSent(true);
     } catch (err: any) {
       setError("Erreur d'envoi du lien.");
@@ -287,12 +325,14 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
             {/* Tabs */}
             <div className="flex bg-slate-50 p-1 rounded-2xl mb-8">
               <button 
+                type="button"
                 onClick={() => { setIsLogin(true); setError(null); }}
                 className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isLogin ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
               >
                 Connexion
               </button>
               <button 
+                type="button"
                 onClick={() => { setIsLogin(false); setError(null); }}
                 className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${!isLogin ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}
               >
@@ -303,15 +343,17 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="space-y-4">
                 <div className="space-y-1.5">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Email</label>
+                  <label htmlFor="email" className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Email</label>
                   <div className="relative group">
                     <UserCircle className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-indigo-600 transition-colors" size={16} />
                     <input 
+                      id="email"
                       type="email" 
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="nom@exemple.com"
                       required
+                      autoComplete={isLogin ? "username" : "email"}
                       className="w-full bg-slate-50 border-none rounded-2xl p-4 pl-12 text-slate-900 text-xs font-bold focus:bg-white ring-1 ring-slate-100 focus:ring-2 focus:ring-indigo-100 outline-none transition-all placeholder:text-slate-300"
                     />
                   </div>
@@ -319,16 +361,18 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
 
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center ml-1">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Mot de passe</label>
+                    <label htmlFor="password" className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Mot de passe</label>
                   </div>
                   <div className="relative group">
                     <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-indigo-600 transition-colors" size={16} />
                     <input 
+                      id="password"
                       type={showPassword ? "text" : "password"}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
                       required
+                      autoComplete={isLogin ? "current-password" : "new-password"}
                       className="w-full bg-slate-50 border-none rounded-2xl p-4 pl-12 pr-12 text-slate-900 text-xs font-bold focus:bg-white ring-1 ring-slate-100 focus:ring-2 focus:ring-indigo-100 outline-none transition-all placeholder:text-slate-300"
                     />
                     <button 

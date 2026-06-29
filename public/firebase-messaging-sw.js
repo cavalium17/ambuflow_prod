@@ -1,17 +1,17 @@
 
 // Scripts Firebase nécessaires pour le Service Worker
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js');
 
 // Initialisation de Firebase dans le Service Worker
 // Utilisez les mêmes valeurs que dans votre firebaseConfig.ts
 firebase.initializeApp({
-  apiKey: "AIzaSyAdLD-MxaEObu8L8MDYwPLSg10nIMA4fVI",
-  authDomain: "ambuflow-e5ffc.firebaseapp.com",
-  projectId: "ambuflow-e5ffc",
-  storageBucket: "ambuflow-e5ffc.firebasestorage.app",
-  messagingSenderId: "296039792412",
-  appId: "1:296039792412:web:4b9bddd562b72d62bac4d9"
+  apiKey: "AIzaSyDjFyyIYPj5cQVZfYuXr_dPPyKhOgNvpEQ",
+  authDomain: "ambuflow-2da1b.firebaseapp.com",
+  projectId: "ambuflow-2da1b",
+  storageBucket: "ambuflow-2da1b.firebasestorage.app",
+  messagingSenderId: "1053097276309",
+  appId: "1:1053097276309:web:9db51643a89011eb09fc9c"
 });
 
 const messaging = firebase.messaging();
