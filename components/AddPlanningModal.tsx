@@ -71,6 +71,8 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
     hours: 5
   });
 
+  const lastLoadedDayRef = React.useRef<string | null>(null);
+
   // Sync state when modal opens
   React.useEffect(() => {
     if (isOpen) {
@@ -87,12 +89,19 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
         hours: 5
       }));
       setStep('choice');
+      lastLoadedDayRef.current = null;
+    } else {
+      lastLoadedDayRef.current = null;
     }
   }, [isOpen, selectedDay, todayStr]);
 
   // Handle date change: reset or load data
   React.useEffect(() => {
     if (!isOpen) return;
+
+    // Only load or reset if the day actually changed
+    if (lastLoadedDayRef.current === newShift.day) return;
+    lastLoadedDayRef.current = newShift.day;
 
     const existingShift = shifts.find(s => s.day === newShift.day);
 
@@ -309,72 +318,70 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
                 </div>
               )}
 
-              {isNewShiftPast && (
-                <div className="space-y-4 pt-4 border-t border-white/10">
-                  <label className="text-[9px] font-black text-indigo-500 uppercase tracking-widest block px-1">Pauses & Coupures</label>
-                  
-                  {newShift.breaks.length > 0 && (
-                    <div className="space-y-2 mb-4">
-                      {newShift.breaks.map(b => (
-                        <div key={b.id} className="flex items-center justify-between p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
-                          <div className="flex items-center gap-2">
-                            {b.isMeal ? <Utensils size={14} className="text-indigo-400" /> : <Coffee size={14} className="text-amber-400" />}
-                            <span className="text-[10px] font-black">{b.start} - {b.end}</span>
-                            {b.isMeal && <span className="text-[8px] opacity-60">({b.location})</span>}
-                          </div>
-                          <button onClick={() => setNewShift(prev => ({...prev, breaks: prev.breaks.filter(br => br.id !== b.id)}))}>
-                            <X size={14} className="text-slate-400" />
-                          </button>
+              <div className="space-y-4 pt-4 border-t border-white/10">
+                <label className="text-[9px] font-black text-indigo-500 uppercase tracking-widest block px-1">Pauses & Coupures</label>
+                
+                {newShift.breaks.length > 0 && (
+                  <div className="space-y-2 mb-4">
+                    {newShift.breaks.map(b => (
+                      <div key={b.id} className="flex items-center justify-between p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+                        <div className="flex items-center gap-2">
+                          {b.isMeal ? <Utensils size={14} className="text-indigo-400" /> : <Coffee size={14} className="text-amber-400" />}
+                          <span className="text-[10px] font-black">{b.start} - {b.end}</span>
+                          {b.isMeal && <span className="text-[8px] opacity-60">({b.location})</span>}
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <button onClick={() => setNewShift(prev => ({...prev, breaks: prev.breaks.filter(br => br.id !== b.id)}))}>
+                          <X size={14} className="text-slate-400" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
-                  {!tempBreak.isActive ? (
-                    <div className="grid grid-cols-2 gap-3">
-                      <button 
-                        onClick={() => setTempBreak({ ...tempBreak, isActive: true, type: 'cafe', duration: 20, start: '10:00' })}
-                        className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-500/20 text-[10px] font-black uppercase tracking-widest hover:bg-white/5 transition-all text-slate-400"
-                      >
-                        <Coffee size={14} /> Pause Café
-                      </button>
-                      <button 
-                        onClick={() => setTempBreak({ ...tempBreak, isActive: true, type: 'repas', duration: 30, start: '12:00' })}
-                        className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-500/20 text-[10px] font-black uppercase tracking-widest hover:bg-white/5 transition-all text-slate-400"
-                      >
-                        <Utensils size={14} /> Coupure Repas
-                      </button>
+                {!tempBreak.isActive ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <button 
+                      onClick={() => setTempBreak({ ...tempBreak, isActive: true, type: 'cafe', duration: 20, start: '10:00' })}
+                      className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-500/20 text-[10px] font-black uppercase tracking-widest hover:bg-white/5 transition-all text-slate-400"
+                    >
+                      <Coffee size={14} /> Pause Café
+                    </button>
+                    <button 
+                      onClick={() => setTempBreak({ ...tempBreak, isActive: true, type: 'repas', duration: 30, start: '12:00' })}
+                      className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-500/20 text-[10px] font-black uppercase tracking-widest hover:bg-white/5 transition-all text-slate-400"
+                    >
+                      <Utensils size={14} /> Coupure Repas
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-5 rounded-2xl bg-indigo-500/5 border border-indigo-500/20 space-y-5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">{tempBreak.type === 'cafe' ? 'Pause Café' : 'Repas'}</span>
+                      <button onClick={() => setTempBreak(p => ({...p, isActive: false}))}><X size={14} /></button>
                     </div>
-                  ) : (
-                    <div className="p-5 rounded-2xl bg-indigo-500/5 border border-indigo-500/20 space-y-5">
+                    <div className="space-y-4">
                       <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">{tempBreak.type === 'cafe' ? 'Pause Café' : 'Repas'}</span>
-                        <button onClick={() => setTempBreak(p => ({...p, isActive: false}))}><X size={14} /></button>
+                         <span className="text-[9px] font-bold text-slate-400 uppercase">Début</span>
+                         <input type="time" className="bg-transparent font-black text-indigo-500" value={tempBreak.start} onChange={e => setTempBreak(p => ({...p, start: e.target.value}))} />
                       </div>
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center">
-                           <span className="text-[9px] font-bold text-slate-400 uppercase">Début</span>
-                           <input type="time" className="bg-transparent font-black text-indigo-500" value={tempBreak.start} onChange={e => setTempBreak(p => ({...p, start: e.target.value}))} />
-                        </div>
-                        <div className="space-y-2">
-                           <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase">
-                              <span>Durée : {tempBreak.duration} min</span>
-                              <span className="text-indigo-400">Fin : {calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration)}</span>
-                           </div>
-                           <input type="range" min="1" max="120" className="w-full h-1.5 accent-indigo-500" value={tempBreak.duration} onChange={e => setTempBreak(p => ({...p, duration: parseInt(e.target.value)}))} />
-                        </div>
-                        {tempBreak.type === 'repas' && (
-                           <div className="grid grid-cols-2 gap-2">
-                              <button onClick={() => setTempBreak(p => ({...p, location: 'Entreprise'}))} className={`p-2 rounded-lg text-[8px] font-black border transition-all ${tempBreak.location === 'Entreprise' ? 'bg-indigo-600 text-white' : 'border-white/5 text-slate-400'}`}>Entreprise</button>
-                              <button onClick={() => setTempBreak(p => ({...p, location: 'Extérieur'}))} className={`p-2 rounded-lg text-[8px] font-black border transition-all ${tempBreak.location === 'Extérieur' ? 'bg-indigo-600 text-white' : 'border-white/5 text-slate-400'}`}>Extérieur</button>
-                           </div>
-                        )}
-                        <button onClick={addTempBreak} className="w-full py-3 bg-indigo-600 rounded-xl text-[10px] font-black uppercase text-white shadow-lg">Ajouter</button>
+                      <div className="space-y-2">
+                         <div className="flex justify-between text-[9px] font-bold text-slate-400 uppercase">
+                            <span>Durée : {tempBreak.duration} min</span>
+                            <span className="text-indigo-400">Fin : {calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration)}</span>
+                         </div>
+                         <input type="range" min="1" max="120" className="w-full h-1.5 accent-indigo-500" value={tempBreak.duration} onChange={e => setTempBreak(p => ({...p, duration: parseInt(e.target.value)}))} />
                       </div>
+                      {tempBreak.type === 'repas' && (
+                         <div className="grid grid-cols-2 gap-2">
+                            <button onClick={() => setTempBreak(p => ({...p, location: 'Entreprise'}))} className={`p-2 rounded-lg text-[8px] font-black border transition-all ${tempBreak.location === 'Entreprise' ? 'bg-indigo-600 text-white' : 'border-white/5 text-slate-400'}`}>Entreprise</button>
+                            <button onClick={() => setTempBreak(p => ({...p, location: 'Extérieur'}))} className={`p-2 rounded-lg text-[8px] font-black border transition-all ${tempBreak.location === 'Extérieur' ? 'bg-indigo-600 text-white' : 'border-white/5 text-slate-400'}`}>Extérieur</button>
+                         </div>
+                      )}
+                      <button onClick={addTempBreak} className="w-full py-3 bg-indigo-600 rounded-xl text-[10px] font-black uppercase text-white shadow-lg">Ajouter</button>
                     </div>
-                  )}
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
 
               <button 
                 onClick={() => {
