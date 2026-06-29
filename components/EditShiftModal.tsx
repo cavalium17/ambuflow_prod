@@ -167,17 +167,15 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
              )
            ) : (
              <>
-               <div className={isShiftPast ? "grid grid-cols-2 gap-4" : "grid grid-cols-1 gap-4"}>
+               <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Début</label>
                     <input type="time" className={inputClass} value={editingShift.start} onChange={e => setEditingShift({...editingShift, start: e.target.value})} />
                   </div>
-                  {isShiftPast && (
-                    <div className="space-y-2">
-                      <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Fin</label>
-                      <input type="time" className={inputClass} value={editingShift.end === '--:--' ? '' : editingShift.end} onChange={e => setEditingShift({...editingShift, end: e.target.value})} />
-                    </div>
-                  )}
+                  <div className="space-y-2">
+                    <label className="text-indigo-500 font-black uppercase text-[9px] tracking-widest px-1">Fin</label>
+                    <input type="time" className={inputClass} value={editingShift.end === '--:--' ? '' : editingShift.end} onChange={e => setEditingShift({...editingShift, end: e.target.value})} />
+                  </div>
                </div>
 
                {(primaryRole !== 'taxi') && (
@@ -329,7 +327,7 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
                onClick={() => {
                   const finalShift = {
                     ...editingShift,
-                    end: isShiftPast ? editingShift.end : '--:--'
+                    end: editingShift.end && editingShift.end !== '' ? editingShift.end : '--:--'
                   };
                   onUpdate(finalShift);
                 }}

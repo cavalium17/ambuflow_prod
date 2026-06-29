@@ -190,7 +190,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
       id,
       day: partialShift.day || getLocalDateString(appCurrentTime),
       start: partialShift.start || '08:00',
-      end: partialShift.end || '18:00',
+      end: partialShift.end && partialShift.end !== '' ? partialShift.end : '--:--',
       crew: partialShift.crew || 'Équipage A',
       vehicle: partialShift.vehicle || 'ASSU',
       breaks: partialShift.breaks || [],

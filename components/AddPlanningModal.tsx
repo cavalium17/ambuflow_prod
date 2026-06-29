@@ -58,7 +58,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
   const [newShift, setNewShift] = useState({
     day: initialDate,
     start: '08:00',
-    end: '18:00',
+    end: '',
     vehicle: isTaxiMode ? 'TAXI' : (availableVehicles[0] || 'ASSU'),
     breaks: [] as Break[]
   });
@@ -108,7 +108,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
       setNewShift(prev => ({
         ...prev,
         start: '08:00',
-        end: '18:00',
+        end: '',
         vehicle: isTaxiMode ? 'TAXI' : (availableVehicles[0] || 'ASSU'),
         breaks: [] // Explicitly clear breaks as requested
       }));
@@ -269,17 +269,15 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
                 <input type="date" className={inputClass} value={newShift.day} onChange={(e) => setNewShift({...newShift, day: e.target.value})} />
               </div>
 
-              <div className={isNewShiftPast ? "grid grid-cols-2 gap-4" : "grid grid-cols-1 gap-4"}>
+              <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="text-[9px] font-black text-indigo-500 uppercase tracking-widest block px-1">Début</label>
                   <input type="time" className={inputClass} value={newShift.start} onChange={(e) => setNewShift({...newShift, start: e.target.value})} />
                 </div>
-                {isNewShiftPast && (
-                  <div className="space-y-2">
-                    <label className="text-[9px] font-black text-indigo-500 uppercase tracking-widest block px-1">Fin (réelle)</label>
-                    <input type="time" className={inputClass} value={newShift.end} onChange={(e) => setNewShift({...newShift, end: e.target.value})} />
-                  </div>
-                )}
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-indigo-500 uppercase tracking-widest block px-1">Fin</label>
+                  <input type="time" className={inputClass} value={newShift.end === '--:--' ? '' : newShift.end} onChange={(e) => setNewShift({...newShift, end: e.target.value})} />
+                </div>
               </div>
 
               {!isTaxiMode && (
@@ -382,7 +380,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
                 onClick={() => {
                   const finalShift = {
                     ...newShift,
-                    end: isNewShiftPast ? newShift.end : '--:--',
+                    end: newShift.end && newShift.end !== '' ? newShift.end : '--:--',
                     isPast: isNewShiftPast
                   };
                   onAddShift(finalShift);
