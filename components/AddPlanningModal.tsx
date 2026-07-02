@@ -494,8 +494,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
                   isUnpaidButCounted: false,
                   hours: undefined
                 })} 
-                disabled={isBalanceInsufficient}
-                className={`w-full py-5 rounded-[24px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all mt-4 border border-white/10 ${isBalanceInsufficient ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-[#2ECC71] text-white'}`}
+                className="w-full py-5 rounded-[24px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all mt-4 border border-white/10 bg-[#2ECC71] text-white hover:bg-[#27AE60]"
               >
                 Valider
               </button>

@@ -54,7 +54,7 @@ export const getFrenchPublicHolidays = (year: number) => {
 };
 
 export const isSundayOrHoliday = (dateStr: string) => {
-    const date = new Date(dateStr);
+    const date = parseLocalDate(dateStr);
     if (date.getDay() === 0) return true; // Dimanche
     const year = date.getFullYear();
     const holidays = getFrenchPublicHolidays(year);
@@ -63,8 +63,8 @@ export const isSundayOrHoliday = (dateStr: string) => {
 
 export const calculateBusinessDays = (start: string, end: string, weekendDays: string[], cpCalculationMode: '25' | '30') => {
     if (!start || !end) return 0;
-    const startDate = new Date(start);
-    const endDateObj = new Date(end);
+    const startDate = parseLocalDate(start);
+    const endDateObj = parseLocalDate(end);
     if (endDateObj < startDate) return 0;
     
     let count = 0;

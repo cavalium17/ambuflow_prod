@@ -212,8 +212,8 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
     isUnpaidButCounted?: boolean; 
   }) => {
     // Generate leave days
-    const start = new Date(leave.day);
-    const end = new Date(leave.endDate);
+    const start = parseLocalDate(leave.day);
+    const end = parseLocalDate(leave.endDate);
     const cur = new Date(start);
     const newLeaves: Shift[] = [];
     
@@ -240,7 +240,8 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
       cur.setDate(cur.getDate() + 1);
     }
     
-    setShifts(prev => [...newLeaves, ...prev]);
+    const leaveDays = newLeaves.map(l => l.day);
+    setShifts(prev => [...newLeaves, ...prev.filter(s => !leaveDays.includes(s.day))]);
     setShowAddModal(false);
   };
 
