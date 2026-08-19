@@ -71,12 +71,13 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
   })();
 
   const addOrUpdateBreak = () => {
-    const breakEndTime = calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration);
+    const safeDuration = Math.min(90, Math.max(1, tempBreak.duration));
+    const breakEndTime = calculateEndTimeFromDuration(tempBreak.start, safeDuration);
     const breakData: Break = {
       id: editingBreakId || Math.random().toString(36).substr(2, 9),
       start: tempBreak.start,
       end: breakEndTime,
-      duration: tempBreak.duration,
+      duration: safeDuration,
       location: tempBreak.location,
       isMeal: tempBreak.type === 'repas'
     };
@@ -282,10 +283,10 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
                             <input 
                               type="range" 
                               min="1" 
-                              max="120" 
+                              max="90" 
                               className="w-full h-1.5 accent-indigo-500" 
-                              value={tempBreak.duration} 
-                              onChange={e => setTempBreak({ ...tempBreak, duration: parseInt(e.target.value) })} 
+                              value={Math.min(90, tempBreak.duration)} 
+                              onChange={e => setTempBreak({ ...tempBreak, duration: Math.min(90, parseInt(e.target.value) || 1) })} 
                             />
                           </div>
 

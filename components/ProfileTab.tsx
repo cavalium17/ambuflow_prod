@@ -106,6 +106,8 @@ interface ProfileTabProps {
   taxiCardExpiryDate?: string;
   supplementaryTaskType?: 'none' | 'type_1' | 'type_2' | 'type_3';
   setSupplementaryTaskType?: (val: 'none' | 'type_1' | 'type_2' | 'type_3') => void;
+  heureEmbauchePrevue?: string;
+  setHeureEmbauchePrevue?: (val: string) => void;
 }
 
 export default function ProfileTab({
@@ -170,7 +172,9 @@ export default function ProfileTab({
   taxiFpcDate = "",
   taxiCardExpiryDate = "",
   supplementaryTaskType = 'none',
-  setSupplementaryTaskType
+  setSupplementaryTaskType,
+  heureEmbauchePrevue = "06:30",
+  setHeureEmbauchePrevue
 }: ProfileTabProps) {
   const [isResetting, setIsResetting] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -293,14 +297,14 @@ export default function ProfileTab({
     if (!modulationStartDate || !modulationWeeks) return null;
     try {
       const start = new Date(modulationStartDate);
-      const weeks = parseInt(modulationWeeks) || 4;
+      const weeks = workRegime === 'fortnightly' ? 2 : (parseInt(modulationWeeks) || 4);
       const end = new Date(start);
       end.setDate(start.getDate() + (weeks * 7) - 1);
       return end;
     } catch (e) {
       return null;
     }
-  }, [modulationStartDate, modulationWeeks]);
+  }, [modulationStartDate, modulationWeeks, workRegime]);
 
   const [isEditingRoles, setIsEditingRoles] = useState(false);
 
@@ -329,9 +333,11 @@ export default function ProfileTab({
             <div className="w-16 h-16 rounded-3xl bg-indigo-500/10 flex items-center justify-center text-indigo-500 mb-6 mx-auto">
               <CalendarIcon size={32} />
             </div>
-            <h3 className={`text-xl font-black mb-2 text-center ${darkMode ? 'text-white' : 'text-slate-900'}`}>Début de modulation</h3>
+            <h3 className={`text-xl font-black mb-2 text-center ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              {workRegime === 'fortnightly' ? 'Début de quinzaine' : 'Début de modulation'}
+            </h3>
             <p className="text-slate-400 text-center text-[10px] font-bold uppercase tracking-widest mb-8 leading-relaxed">
-              Sélectionnez la date de début de votre cycle de modulation.
+              Sélectionnez la date de début de {workRegime === 'fortnightly' ? 'votre cycle en quinzaine.' : 'votre cycle de modulation.'}
             </p>
             
             <div className="space-y-4 mb-8">
@@ -593,7 +599,7 @@ export default function ProfileTab({
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { id: 'weekly', label: 'Hebdomadaire' },
-                  { id: 'fortnightly', label: 'Quinzaine / Cycles' },
+                  { id: 'fortnightly', label: 'Quinzaine' },
                   { id: 'modulation', label: 'Modulation' },
                   { id: 'annualization', label: 'Annualisation' }
                 ].map(regime => (
@@ -621,10 +627,12 @@ export default function ProfileTab({
                   <div className={`p-2 rounded-xl ${darkMode ? 'bg-amber-500/10' : 'bg-amber-50'}`}>
                     <CalendarIcon size={16} className="text-amber-500" />
                   </div>
-                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Cycle de Modulation</span>
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {workRegime === 'fortnightly' ? 'Cycle en Quinzaine' : 'Cycle de Modulation'}
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className={`grid ${workRegime === 'fortnightly' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'} gap-4`}>
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Date de début de référence</label>
                     <input 
@@ -637,37 +645,39 @@ export default function ProfileTab({
                     />
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Durée de cycle (semaines)</label>
-                    <div className={`flex items-center justify-between p-1 rounded-xl border ${
-                      darkMode ? 'bg-slate-950/20 border-white/10' : 'bg-white/40 border-slate-200'
-                    }`}>
-                      <button 
-                        type="button"
-                        onClick={() => setModulationWeeks?.(String(Math.max(1, (parseInt(modulationWeeks) || 1) - 1)))}
-                        className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
-                          darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
-                        }`}
-                      >
-                        <Minus size={12} />
-                      </button>
-                      <div className="flex items-baseline gap-0.5">
-                        <span className={`text-xs font-black tabular-nums ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                          {modulationWeeks}
-                        </span>
-                        <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">sem.</span>
+                  {workRegime !== 'fortnightly' && (
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Durée de cycle (semaines)</label>
+                      <div className={`flex items-center justify-between p-1 rounded-xl border ${
+                        darkMode ? 'bg-slate-950/20 border-white/10' : 'bg-white/40 border-slate-200'
+                      }`}>
+                        <button 
+                          type="button"
+                          onClick={() => setModulationWeeks?.(String(Math.max(1, (parseInt(modulationWeeks) || 1) - 1)))}
+                          className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                            darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
+                          }`}
+                        >
+                          <Minus size={12} />
+                        </button>
+                        <div className="flex items-baseline gap-0.5">
+                          <span className={`text-xs font-black tabular-nums ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                            {modulationWeeks}
+                          </span>
+                          <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">sem.</span>
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => setModulationWeeks?.(String((parseInt(modulationWeeks) || 1) + 1))}
+                          className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                            darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
+                          }`}
+                        >
+                          <Plus size={12} />
+                        </button>
                       </div>
-                      <button 
-                        type="button"
-                        onClick={() => setModulationWeeks?.(String((parseInt(modulationWeeks) || 1) + 1))}
-                        className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
-                          darkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400' : 'bg-white hover:bg-slate-100 text-slate-500 shadow-sm border border-slate-200'
-                        }`}
-                      >
-                        <Plus size={12} />
-                      </button>
                     </div>
-                  </div>
+                  )}
                 </div>
 
                 {modulationStartDate && (
@@ -675,7 +685,7 @@ export default function ProfileTab({
                     darkMode ? 'bg-indigo-500/5 text-indigo-400 border border-indigo-500/10' : 'bg-indigo-50 text-indigo-700 border border-indigo-100'
                   }`}>
                     <span>Cycle actif calculé :</span>
-                    <span>Modulation de {modulationWeeks} sem.</span>
+                    <span>{workRegime === 'fortnightly' ? 'Quinzaine (2 sem.)' : `Modulation de ${modulationWeeks} sem.`}</span>
                   </div>
                 )}
               </div>
@@ -970,6 +980,48 @@ export default function ProfileTab({
             >
               <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${autoGeo ? 'left-7' : 'left-1'}`} />
             </button>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
+                  <Clock size={18} />
+                </div>
+                <div>
+                  <span className="text-sm font-bold block">Prise de poste auto</span>
+                  <span className="text-[10px] text-slate-500 font-medium">Démarre le service automatiquement</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  if (heureEmbauchePrevue) {
+                    setHeureEmbauchePrevue?.("");
+                  } else {
+                    setHeureEmbauchePrevue?.("06:30");
+                  }
+                }} 
+                className={`w-12 h-6 rounded-full relative transition-all ${heureEmbauchePrevue ? 'bg-indigo-600' : 'bg-slate-700'}`}
+              >
+                <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${heureEmbauchePrevue ? 'left-7' : 'left-1'}`} />
+              </button>
+            </div>
+
+            {heureEmbauchePrevue && (
+              <div className="flex items-center justify-between pl-11 pt-1">
+                <span className="text-xs text-slate-400">Heure de démarrage :</span>
+                <input 
+                  type="time" 
+                  value={heureEmbauchePrevue} 
+                  onChange={(e) => setHeureEmbauchePrevue?.(e.target.value)}
+                  className={`text-xs px-2 py-1 rounded-lg border focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
+                    darkMode 
+                      ? 'bg-slate-950/40 border-white/10 text-white' 
+                      : 'bg-white border-slate-200 text-slate-800 shadow-sm'
+                  }`}
+                />
+              </div>
+            )}
           </div>
 
           <div className="pt-6 border-t border-white/5">

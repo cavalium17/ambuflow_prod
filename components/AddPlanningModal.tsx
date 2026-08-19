@@ -161,12 +161,13 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
   };
 
   const addTempBreak = () => {
-    const end = calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration);
+    const safeDuration = Math.min(90, Math.max(1, tempBreak.duration));
+    const end = calculateEndTimeFromDuration(tempBreak.start, safeDuration);
     const b: Break = {
       id: Math.random().toString(36).substr(2, 9),
       start: tempBreak.start,
       end,
-      duration: tempBreak.duration,
+      duration: safeDuration,
       location: tempBreak.location,
       isMeal: tempBreak.type === 'repas'
     };
@@ -369,7 +370,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
                             <span>Durée : {tempBreak.duration} min</span>
                             <span className="text-indigo-400">Fin : {calculateEndTimeFromDuration(tempBreak.start, tempBreak.duration)}</span>
                          </div>
-                         <input type="range" min="1" max="120" className="w-full h-1.5 accent-indigo-500" value={tempBreak.duration} onChange={e => setTempBreak(p => ({...p, duration: parseInt(e.target.value)}))} />
+                         <input type="range" min="1" max="90" className="w-full h-1.5 accent-indigo-500" value={Math.min(90, tempBreak.duration)} onChange={e => setTempBreak(p => ({...p, duration: Math.min(90, parseInt(e.target.value) || 1)}))} />
                       </div>
                       {tempBreak.type === 'repas' && (
                          <div className="grid grid-cols-2 gap-2">

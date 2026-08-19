@@ -122,7 +122,11 @@ export const calculateTotalDurationMinutes = (shift: Shift) => {
     
     if (shift.breaks) {
       shift.breaks.forEach(b => {
-        durationMin -= (Number(b.duration) || 0);
+        const rawDur = Number(b.duration) || 0;
+        const accountedDur = b.isMeal 
+          ? Math.max(30, Math.min(90, rawDur))
+          : Math.max(20, Math.min(90, rawDur));
+        durationMin -= Math.min(90, accountedDur);
       });
     }
     

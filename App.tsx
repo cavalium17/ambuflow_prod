@@ -1000,7 +1000,7 @@ const App: React.FC = () => {
 
   // Gestion des congés payés automatiques au 1er du mois
   useEffect(() => {
-    if (!onboarded) return;
+    if (!onboarded || configLoading) return;
 
     const currentMonthStr = `${currentTime.getFullYear()}-${String(currentTime.getMonth() + 1).padStart(2, '0')}`;
     
@@ -1050,7 +1050,7 @@ const App: React.FC = () => {
         );
       }
     }
-  }, [currentTime, onboarded, lastCpAccrualDate, weeklyContractHours, cpCalculationMode, addNotification]);
+  }, [currentTime, onboarded, configLoading, lastCpAccrualDate, weeklyContractHours, cpCalculationMode, addNotification]);
   // Permissions et Notifications
   useEffect(() => {
     // Demande de permissions Notifications
@@ -1723,6 +1723,7 @@ const App: React.FC = () => {
           }
           
           let actualDuration = Math.round(diffMs / 60000);
+          actualDuration = Math.min(90, Math.max(1, actualDuration));
           
           lastBreak.duration = actualDuration;
           lastBreak.end = resumeTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
@@ -1933,7 +1934,8 @@ const App: React.FC = () => {
       startDate.setHours(hParts[0], hParts[1], 0, 0);
     }
 
-    const durationMs = breakDuration * 60000;
+    const safeDuration = Math.min(90, Math.max(1, breakDuration));
+    const durationMs = safeDuration * 60000;
     const endDate = new Date(startDate.getTime() + durationMs);
     
     setBreakStartDateTime(startDate);
@@ -1953,7 +1955,7 @@ const App: React.FC = () => {
         id: Math.random().toString(36).substr(2, 9),
         start: actualStartTimeStr,
         end: endTimeStr,
-        duration: breakDuration,
+        duration: safeDuration,
         location: breakType === 'meal' ? breakLocation : 'Entreprise',
         isMeal: breakType === 'meal'
       };
@@ -2460,12 +2462,18 @@ const App: React.FC = () => {
 
   // 1. ARRIVÉE AUTOMATIQUE À L'HEURE D'EMBAUCHE PRÉVUE (PLANIFICATION DE LA VEILLE)
   useEffect(() => {
+    if (configLoading) return;
     if (status === ServiceStatus.OFF && heureEmbauchePrevue) {
       try {
         const todayStr = getLocalDateString(currentTime);
         // Avoid auto-start if today's shift was canceled
         const hasCanceledToday = localStorage.getItem('ambuflow_canceled_today') === todayStr;
         if (hasCanceledToday) {
+          return;
+        }
+
+        const autostartKey = `ambuflow_autostart_done_${todayStr}`;
+        if (localStorage.getItem(autostartKey)) {
           return;
         }
 
@@ -2478,6 +2486,7 @@ const App: React.FC = () => {
             todayPlannedTime.setHours(h, m, 0, 0);
             
             if (currentTime >= todayPlannedTime) {
+              localStorage.setItem(autostartKey, 'true');
               handleStartService(null, todayPlannedTime);
               addNotification("EMBAUCHE AUTOMATIQUE", `Votre service a été démarré automatiquement à ${heureEmbauchePrevue}.`, "success");
             }
@@ -2487,7 +2496,7 @@ const App: React.FC = () => {
         console.error("Error in auto starting shift on scheduled time:", e);
       }
     }
-  }, [currentTime, status, heureEmbauchePrevue, shifts, handleStartService, addNotification]);
+  }, [currentTime, configLoading, status, heureEmbauchePrevue, shifts, handleStartService, addNotification]);
 
   // Listen to visibilitychange / window focus to catch wake-ups immediately
   useEffect(() => {
@@ -2527,6 +2536,7 @@ const App: React.FC = () => {
     localStorage.setItem('ambuflow_shifts', JSON.stringify(shifts));
     localStorage.setItem('ambuflow_active_shift_id', activeShiftId || "");
     localStorage.setItem('ambuflow_scheduled_shift_id', scheduledShiftId || "");
+    localStorage.setItem('ambuflow_heure_embauche_prevue', heureEmbauchePrevue || "");
     if (nextAutoStart) localStorage.setItem('ambuflow_next_autostart', nextAutoStart.toISOString());
     else localStorage.removeItem('ambuflow_next_autostart');
     
@@ -2538,7 +2548,7 @@ const App: React.FC = () => {
 
     localStorage.setItem('ambuflow_notifications', JSON.stringify(notifications));
     localStorage.setItem('ambuflow_user_stats', JSON.stringify(userStats));
-  }, [status, logs, activeShiftId, scheduledShiftId, shifts, nextAutoStart, breakStartDateTime, breakEndTimeActual, userStats, notifications]);
+  }, [status, logs, activeShiftId, scheduledShiftId, heureEmbauchePrevue, shifts, nextAutoStart, breakStartDateTime, breakEndTimeActual, userStats, notifications]);
 
   // Logique AFGSU
   const afgsuStatus = useMemo(() => {
@@ -2636,7 +2646,7 @@ const App: React.FC = () => {
     if (activeShift.breaks) {
       activeShift.breaks.forEach(b => { 
         if (b.end !== '--:--' && b.id !== lastBreak?.id) {
-          const bDur = Number(b.duration) || 0;
+          const bDur = Math.min(90, Math.max(0, Number(b.duration) || 0));
           diffMs -= (bDur * 60000); 
         }
       });
@@ -2706,7 +2716,7 @@ const App: React.FC = () => {
       targetMin = (parseInt(hoursBase) || 35) * 60;
     } else if (workRegime === 'fortnightly') {
       const referenceStartDate = modulationStartDate ? new Date(modulationStartDate) : new Date('2026-04-13'); 
-      const cycleWeeks = parseInt(modulationWeeks) || 9; // 9 semaines par défaut
+      const cycleWeeks = 2; // Une quinzaine dure strictement 2 semaines
       const { startOfCycle, endOfCycle } = isWithinCustomModulationPeriod(currentTime, referenceStartDate, cycleWeeks, currentTime);
 
       let minutesTerrain = 0;
@@ -3080,7 +3090,7 @@ const App: React.FC = () => {
       periodShifts = shifts.filter(s => parseLocalDate(s.day) >= monday);
     } else if (workRegime === 'fortnightly') {
       const referenceStartDate = modulationStartDate ? new Date(modulationStartDate) : new Date('2026-04-13'); 
-      const cycleWeeks = parseInt(modulationWeeks) || 9; // 9 semaines par défaut
+      const cycleWeeks = 2; // Une quinzaine dure strictement 2 semaines
       periodShifts = shifts.filter(s => {
         const d = parseLocalDate(s.day);
         if (!d) return false;
@@ -3411,7 +3421,7 @@ const App: React.FC = () => {
                  <h1 
                    className={`font-black tabular-nums tracking-tighter leading-none drop-shadow-2xl ${isBreakFinished ? 'text-rose-500 animate-blink-red py-4' : ''}`}
                    style={{ 
-                     fontSize: isBreakFinished ? '2.25rem' : 'clamp(2rem, 11vw, 4.5rem)', 
+                     fontSize: isBreakFinished ? '3.5rem' : 'clamp(3rem, 16vw, 6.5rem)',
                      whiteSpace: 'nowrap',
                      display: 'block',
                      width: '100%',
@@ -4006,8 +4016,8 @@ const App: React.FC = () => {
                       max="90" 
                       step="1" 
                       className="w-full h-2.5 bg-indigo-500/10 dark:bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" 
-                      value={breakDuration} 
-                      onChange={(e) => setBreakDuration(parseInt(e.target.value))} 
+                      value={Math.min(90, breakDuration)} 
+                      onChange={(e) => setBreakDuration(Math.min(90, Math.max(1, parseInt(e.target.value) || 1)))} 
                     />
                     <div className="flex justify-between mt-2 text-[8px] font-black text-slate-500 uppercase tracking-widest opacity-40">
                       <span>1m</span>
@@ -4559,6 +4569,8 @@ const App: React.FC = () => {
                 taxiCardExpiryDate={taxiCardExpiryDate}
                 supplementaryTaskType={supplementaryTaskType}
                 setSupplementaryTaskType={setSupplementaryTaskType}
+                heureEmbauchePrevue={heureEmbauchePrevue}
+                setHeureEmbauchePrevue={setHeureEmbauchePrevue}
               />}
             </main>
             <Navigation 

@@ -73,6 +73,7 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
           const endMin = toMinutes(editData.end);
           let duration = endMin - startMin;
           if (duration < 0) duration += 1440;
+          duration = Math.min(90, Math.max(1, duration));
           
           return { ...b, start: editData.start, end: editData.end, location: editData.location, duration: duration };
         }
