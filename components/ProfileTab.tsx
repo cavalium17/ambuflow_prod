@@ -774,9 +774,11 @@ export default function ProfileTab({
                 }`}>
                   <input 
                     type="number"
+                    step="0.01"
+                    min="0"
                     value={initialCpBalance}
-                    onChange={(e) => setInitialCpBalance(Number(e.target.value))}
-                    className={`bg-transparent text-sm font-black text-right w-12 outline-none focus:text-orange-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
+                    onChange={(e) => setInitialCpBalance(parseFloat(e.target.value) || 0)}
+                    className={`bg-transparent text-sm font-black text-right w-16 outline-none focus:text-orange-500 transition-colors ${darkMode ? 'text-white' : 'text-slate-900'}`}
                   />
                   <span className="text-[10px] font-bold text-slate-500 uppercase">jours</span>
                 </div>

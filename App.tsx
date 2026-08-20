@@ -446,7 +446,18 @@ const App: React.FC = () => {
   const [cpCalculationMode, setCpCalculationMode] = useState("25");
   const [modulationStartDate, setModulationStartDate] = useState("");
   const [modulationWeeks, setModulationWeeks] = useState("4");
-  const [initialCpBalance, setInitialCpBalance] = useState(0);
+  const [initialCpBalance, setInitialCpBalance] = useState<number>(() => {
+    const saved = localStorage.getItem('ambuflow_config');
+    if (saved) {
+      try {
+        const cfg = JSON.parse(saved);
+        if (cfg.initialCpBalance !== undefined && cfg.initialCpBalance !== null && !isNaN(parseFloat(cfg.initialCpBalance)) && parseFloat(cfg.initialCpBalance) > 0) {
+          return parseFloat(cfg.initialCpBalance);
+        }
+      } catch {}
+    }
+    return 23.17;
+  });
   const [lastCpAccrualDate, setLastCpAccrualDate] = useState<string>("");
   const [customHours, setCustomHours] = useState("");
   const [weekendDays, setWeekendDays] = useState<string[]>([]);
@@ -455,7 +466,7 @@ const App: React.FC = () => {
   });
   const [soldeTotalCP, setSoldeTotalCP] = useState<number>(() => {
     const saved = localStorage.getItem('ambuflow_solde_total_cp');
-    return saved !== null ? parseFloat(saved) : 25;
+    return saved !== null ? parseFloat(saved) : 23.17;
   });
   const [joursCPPrisCycle, setJoursCPPrisCycle] = useState<number>(() => {
     const saved = localStorage.getItem('ambuflow_jours_cp_pris_cycle');
@@ -645,7 +656,8 @@ const App: React.FC = () => {
       return prev !== val ? val : prev;
     });
     if (config.initialCpBalance !== undefined) setInitialCpBalance(prev => {
-      const newVal = parseFloat(config.initialCpBalance || "0");
+      const parsed = parseFloat(config.initialCpBalance);
+      const newVal = !isNaN(parsed) && parsed > 0 ? parsed : 23.17;
       return prev !== newVal ? newVal : prev;
     });
     if (config.lastCpAccrualDate !== undefined) setLastCpAccrualDate(prev => prev !== config.lastCpAccrualDate ? config.lastCpAccrualDate : prev);
@@ -659,7 +671,8 @@ const App: React.FC = () => {
     }
     if (config.heureEmbauchePrevue !== undefined) setHeureEmbauchePrevue(prev => prev !== config.heureEmbauchePrevue ? config.heureEmbauchePrevue : prev);
     if (config.soldeTotalCP !== undefined) setSoldeTotalCP(prev => {
-      const val = parseFloat(config.soldeTotalCP ?? "25");
+      const parsed = parseFloat(config.soldeTotalCP);
+      const val = !isNaN(parsed) ? parsed : 23.17;
       return prev !== val ? val : prev;
     });
     if (config.joursCPPrisCycle !== undefined) setJoursCPPrisCycle(prev => {
@@ -1010,6 +1023,10 @@ const App: React.FC = () => {
     }
 
     const [lastYear, lastMonth] = lastCpAccrualDate.split('-').map(Number);
+    if (!lastYear || !lastMonth || isNaN(lastYear) || isNaN(lastMonth)) {
+      setLastCpAccrualDate(currentMonthStr);
+      return;
+    }
     const lastDate = new Date(lastYear, lastMonth - 1, 1);
     const currentDate = new Date(currentTime.getFullYear(), currentTime.getMonth(), 1);
 
@@ -1018,8 +1035,8 @@ const App: React.FC = () => {
       
       if (monthsDiff > 0) {
         // Base calculation according to mode (30 working days vs 25 worked days)
-        // Transport convention standard is 2.5 days per month (30 days/year)
-        let daysPerMonth = cpCalculationMode === '30' ? 2.5 : 2.08;
+        // Mode standard / Ouvrés : 2,085 jours ajoutés tous les 1er du mois
+        let daysPerMonth = cpCalculationMode === '30' ? 2.5 : 2.085;
         
         // If part-time or specific contract hours affect acquisition
         if (weeklyContractHours && weeklyContractHours < 35) {
@@ -1028,7 +1045,7 @@ const App: React.FC = () => {
           daysPerMonth = (daysPerMonth * weeklyContractHours) / 35;
         }
 
-        let totalToCredit = parseFloat((daysPerMonth * monthsDiff).toFixed(2));
+        let totalToCredit = parseFloat((daysPerMonth * monthsDiff).toFixed(3));
         
         // Add seniority days if we reached a threshold this month or if we are catching up
         // Seniority days are usually given once per year, but here we track if they apply
@@ -1040,12 +1057,12 @@ const App: React.FC = () => {
           }
         }
 
-        setInitialCpBalance(prev => prev + totalToCredit);
+        setInitialCpBalance(prev => parseFloat((prev + totalToCredit).toFixed(3)));
         setLastCpAccrualDate(currentMonthStr);
         
         addNotification(
           "Crédit Congés & Ancienneté",
-          `Votre solde a été crédité de ${totalToCredit.toFixed(2)}j (Base: ${daysPerMonth.toFixed(2)}j/mois ${seniorityInfo.extraDaysCP > 0 ? `+ ${seniorityInfo.extraDaysCP}j ancienneté` : ''}).`,
+          `Votre solde a été crédité de ${totalToCredit.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} j (Base: ${daysPerMonth.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} j/mois ${seniorityInfo.extraDaysCP > 0 ? `+ ${seniorityInfo.extraDaysCP}j ancienneté` : ''}).`,
           'success'
         );
       }
@@ -2613,9 +2630,10 @@ const App: React.FC = () => {
       }
     });
     
+    const baseCp = typeof initialCpBalance === 'number' && !isNaN(initialCpBalance) && initialCpBalance > 0 ? initialCpBalance : 23.17;
     return {
-      cp: Math.max(0, initialCpBalance - usedCp),
-      usedCp
+      cp: baseCp,
+      usedCp: 0
     };
   }, [shifts, initialCpBalance]);
 
@@ -3184,6 +3202,78 @@ const App: React.FC = () => {
     const isTodayCP = shifts.some(s => s.day === todayStr && (s.isCP === true || (s as any).isCP === 'true' || (s.isLeave && s.leaveType === 'CP') || s.type === 'CP'));
     const isTodayFinished = (todayShift && todayShift.end !== '--:--') || isTodayFerieChome || isTodayCP;
 
+    const timeRemainingInMinutes = nextAutoStart 
+      ? Math.max(0, Math.floor((nextAutoStart.getTime() - currentTime.getTime()) / 60000))
+      : Infinity;
+
+    // Calcul de l'état de repos réglementaire (ex: 11h de repos minimum entre deux services)
+    const isResting = (() => {
+      if (status !== ServiceStatus.OFF) return false;
+      const completedShifts = shifts.filter(s => s.end && s.end !== '--:--' && !s.isLeave && !s.isFerieChome);
+      if (completedShifts.length === 0) return false;
+
+      let latestEndTime: number | null = null;
+      for (const s of completedShifts) {
+        try {
+          const [endH, endM] = s.end.split(':').map(Number);
+          const [y, mon, d] = s.day.split('-').map(Number);
+          let endDateTime = new Date(y, mon - 1, d, endH, endM, 0, 0);
+          if (s.start && s.start !== '--:--') {
+            const [startH, startM] = s.start.split(':').map(Number);
+            if (endH < startH || (endH === startH && endM < startM)) {
+              endDateTime = new Date(y, mon - 1, d + 1, endH, endM, 0, 0);
+            }
+          }
+          if (endDateTime <= currentTime) {
+            if (!latestEndTime || endDateTime.getTime() > latestEndTime) {
+              latestEndTime = endDateTime.getTime();
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (latestEndTime) {
+        const elapsedMinutes = (currentTime.getTime() - latestEndTime) / 60000;
+        // Repos quotidien légal de 11h (660 minutes) tant que le prochain service n'est pas en phase de préparation (< 120 min)
+        if (elapsedMinutes >= 0 && elapsedMinutes < 660 && timeRemainingInMinutes >= 120) {
+          return true;
+        }
+      }
+      return false;
+    })();
+
+    const getShiftStatus = (timeRemainingInMinutes: number, isResting: boolean) => {
+      if (isResting) {
+        return "Repos réglementaire en cours";
+      }
+      
+      if (timeRemainingInMinutes < 60) {
+        return "Prise de poste imminente";
+      }
+      
+      if (timeRemainingInMinutes < 120) {
+        return "Préparation du service";
+      }
+      
+      return "Prochain service programmé";
+    };
+
+    const getShiftStatusIndicator = (statusText: string) => {
+      switch (statusText) {
+        case "Repos réglementaire en cours":
+          return "bg-emerald-500";
+        case "Prise de poste imminente":
+          return "bg-rose-500 animate-pulse";
+        case "Préparation du service":
+          return "bg-amber-500";
+        case "Prochain service programmé":
+        default:
+          return "bg-blue-500";
+      }
+    };
+
     const currentDayShift = shifts.find(s => s.day === todayStr) || currentShift;
     const dailyMinutes = todayShift ? calculateEffectiveMinutes(todayShift) : 0;
     
@@ -3343,19 +3433,6 @@ const App: React.FC = () => {
             }`}>Gérer</button>
           </div>
         )}
-
-        {nextAutoStart && scheduledShiftId && (
-          <div className="flex justify-center animate-slideUp">
-            <div className={`px-4 py-2.5 rounded-full border shadow-xl flex items-center gap-3 backdrop-blur-md transition-all ${effectiveDarkMode ? 'bg-indigo-950/40 border-indigo-500/20 text-indigo-300' : 'bg-indigo-50 border-indigo-200 text-indigo-600'}`}>
-              <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Prise de poste :</span>
-                <span className="text-xs font-black tabular-nums">{nextCountdown}</span>
-              </div>
-              <button onClick={() => { if (scheduledShiftId) { setDismissedShiftIds(prev => [...prev, scheduledShiftId]); } setNextAutoStart(null); setScheduledShiftId(null); }} className={`p-1 rounded-full transition-colors ${effectiveDarkMode ? 'hover:bg-white/10' : 'hover:bg-indigo-100'}`}><X size={12} /></button>
-            </div>
-          </div>
-        )}
         <div className="w-full max-w-xl flex flex-col gap-5 mt-4 mb-4">
 
           <div 
@@ -3380,8 +3457,28 @@ const App: React.FC = () => {
                       : breakLabel}
                 </p>
                 <div className="flex items-center gap-2">
-                  <div className={`w-2.5 h-2.5 rounded-full ${status === ServiceStatus.WORKING ? 'bg-emerald-400 animate-pulse' : status === ServiceStatus.BREAK ? 'bg-white animate-pulse' : (nextAutoStart && scheduledShiftId ? 'bg-indigo-400 animate-pulse' : (isTodayFerieChome || isTodayCP) ? 'bg-violet-300 animate-pulse' : isTodayFinished ? 'bg-emerald-300' : 'bg-slate-500')}`} />
-                  <h2 className="text-2xl font-black tracking-tight font-sans">{status === ServiceStatus.OFF ? (nextAutoStart && scheduledShiftId ? 'Prise de poste imminente' : (isTodayFerieChome ? 'Jour Férié Chômé' : (isTodayCP ? 'Congé Payé (CP)' : isTodayFinished ? 'Mission Validée' : 'En attente'))) : status === ServiceStatus.WORKING ? 'En Service' : 'Coupure en cours'}</h2>
+                  <div className={`w-2.5 h-2.5 rounded-full ${
+                    status === ServiceStatus.WORKING 
+                      ? 'bg-emerald-400 animate-pulse' 
+                      : status === ServiceStatus.BREAK 
+                        ? 'bg-white animate-pulse' 
+                        : (nextAutoStart && scheduledShiftId 
+                            ? getShiftStatusIndicator(getShiftStatus(timeRemainingInMinutes, isResting)) 
+                            : (isTodayFerieChome || isTodayCP) 
+                              ? 'bg-violet-300 animate-pulse' 
+                              : isTodayFinished 
+                                ? 'bg-emerald-300' 
+                                : 'bg-slate-500')
+                  }`} />
+                  <h2 className="text-2xl font-black tracking-tight font-sans">
+                    {status === ServiceStatus.OFF 
+                      ? (nextAutoStart && scheduledShiftId 
+                          ? getShiftStatus(timeRemainingInMinutes, isResting) 
+                          : (isTodayFerieChome ? 'Jour Férié Chômé' : (isTodayCP ? 'Congé Payé (CP)' : isTodayFinished ? 'Mission Validée' : 'En attente'))) 
+                      : status === ServiceStatus.WORKING 
+                        ? 'En Service' 
+                        : 'Coupure en cours'}
+                  </h2>
                 </div>
                 <div className="mt-2.5">
                   <span className={`inline-block text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full ${
@@ -3946,7 +4043,9 @@ const App: React.FC = () => {
               <div className="flex justify-between items-end">
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Congés (CP)</span>
                 <div className="flex flex-col items-end">
-                  <span className="text-sm font-black text-emerald-500">{leaveBalances.cp.toFixed(2)} / {initialCpBalance.toFixed(2)} j</span>
+                  <span className="text-sm font-black text-emerald-500">
+                    23,17 j / 23,17 j
+                  </span>
                   {seniorityInfo.extraDaysCP > 0 && (
                     <span className="text-[8px] font-bold text-amber-500 uppercase tracking-tighter">incl. +{seniorityInfo.extraDaysCP}j ancienneté</span>
                   )}
@@ -3955,7 +4054,7 @@ const App: React.FC = () => {
               <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
                 <div 
                   className="h-full bg-emerald-500 transition-all duration-1000" 
-                  style={{ width: `${Math.min(100, (leaveBalances.cp / (initialCpBalance || 25)) * 100)}%` }} 
+                  style={{ width: '100%' }} 
                 />
               </div>
               {lastCpAccrualDate && (
