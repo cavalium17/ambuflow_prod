@@ -141,13 +141,20 @@ export const calculateTotalDuration = (shift: Shift) => {
 };
 
 export const calculateEndTimeFromDuration = (startTime: string, durationMin: number) => {
-  const [h, m] = startTime.split(':').map(Number);
+  if (!startTime || !startTime.includes(':')) return '--:--';
+  const [hRaw, mRaw] = startTime.split(':').map(Number);
+  const h = isNaN(hRaw) ? 0 : hRaw;
+  const m = isNaN(mRaw) ? 0 : mRaw;
+  const safeDuration = isNaN(durationMin) ? 0 : durationMin;
   const date = new Date();
-  date.setHours(h, m + durationMin);
+  date.setHours(h, m + safeDuration, 0, 0);
   return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 };
 
 export const toMinutes = (timeStr: string) => {
-  const [h, m] = timeStr.split(':').map(Number);
+  if (!timeStr || !timeStr.includes(':')) return 0;
+  const [hRaw, mRaw] = timeStr.split(':').map(Number);
+  const h = isNaN(hRaw) ? 0 : hRaw;
+  const m = isNaN(mRaw) ? 0 : mRaw;
   return h * 60 + m;
 };

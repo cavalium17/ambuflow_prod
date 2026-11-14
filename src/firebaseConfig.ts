@@ -4,7 +4,15 @@ import {
   browserLocalPersistence, 
   GoogleAuthProvider 
 } from 'firebase/auth';
-import { initializeFirestore, getFirestore, doc, getDocFromServer, disableNetwork } from 'firebase/firestore';
+import { 
+  initializeFirestore, 
+  getFirestore, 
+  doc, 
+  getDocFromServer, 
+  disableNetwork,
+  persistentLocalCache,
+  persistentMultipleTabManager
+} from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 import firebaseConfigData from '../firebase-applet-config.json';
@@ -70,11 +78,16 @@ export const auth = getAuth(app);
 auth.setPersistence(browserLocalPersistence);
 
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('https://www.googleapis.com/auth/gmail.send');
 
 // Initialize Firestore with databaseId if provided
-// Forced Long Polling to avoid WebSocket issues in sandboxed environments
+// Forced Long Polling to avoid WebSocket issues in sandboxed environments,
+// and persistent multi-tab local cache for complete offline & device-off functionality
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
 }, databaseId || undefined);
 
 // Pre-emptively disable network if quota is known to be exceeded

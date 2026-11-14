@@ -18,8 +18,10 @@ import {
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
-  signInWithPopup
+  signInWithPopup,
+  GoogleAuthProvider
 } from 'firebase/auth';
+import { setGmailSessionToken } from '../src/services/gmailService';
 import { 
   doc, 
   setDoc, 
@@ -169,6 +171,10 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
     setError(null);
       try {
         const result = await signInWithPopup(auth, googleProvider);
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          setGmailSessionToken(credential.accessToken, result.user.email);
+        }
         const user = result.user;
         const userDocRef = doc(db, 'users', user.uid);
         

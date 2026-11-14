@@ -1,87 +1,62 @@
-const CACHE_NAME = 'ambuflow-cache-v3';
-const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/index.css',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/1000013491.mp4',
-  'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap'
-];
+const CACHE_NAME = 'ambuflow-v5-clean';
 
-// Installation
+// Installation : active immédiatement le nouveau service worker
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      console.log('[SW] Caching app shell');
-      return cache.addAll(ASSETS_TO_CACHE);
-    })
-  );
   self.skipWaiting();
 });
 
-// Activation
+// Activation : purge tous les anciens caches corrompus et prend le contrôle
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
-            console.log('[SW] Deleting old cache:', cacheName);
-            return caches.delete(cacheName);
-          }
+          console.log('[SW] Purging cache:', cacheName);
+          return caches.delete(cacheName);
         })
       );
     }).then(() => self.clients.claim())
   );
 });
 
-// Stratégie de cache : Stale-While-Revalidate
+// Stratégie de requête : ne jamais intercepter ni polluer les modules de dev Vite
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  
-  // Ignorer les requêtes non-GET et les appels API Firebase/Analytics
-  if (request.method !== 'GET' || 
-      request.url.includes('firestore.googleapis.com') || 
-      request.url.includes('firebaselogging.googleapis.com') ||
-      request.url.includes('identitytoolkit.googleapis.com')) {
+  const url = new URL(request.url);
+
+  // Laisser passer directement toutes les requêtes de dev, modules, API et Firebase
+  if (
+    request.method !== 'GET' ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.includes('/node_modules/') ||
+    url.pathname.endsWith('.ts') ||
+    url.pathname.endsWith('.tsx') ||
+    url.pathname.endsWith('.jsx') ||
+    url.pathname === '/index.html' ||
+    url.pathname === '/' ||
+    url.search.includes('v=') ||
+    url.search.includes('t=') ||
+    request.url.includes('firestore.googleapis.com') ||
+    request.url.includes('firebaselogging.googleapis.com') ||
+    request.url.includes('identitytoolkit.googleapis.com') ||
+    request.url.includes('securetoken.googleapis.com')
+  ) {
     return;
   }
 
-  // Navigation : Network First with Cache Fallback
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-          return response;
-        })
-        .catch(() => caches.match('/index.html'))
-    );
-    return;
-  }
-
-  // Autres ressources : Stale-While-Revalidate
+  // Network First avec fallback
   event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      const fetchPromise = fetch(request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const copy = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        }
-        return networkResponse;
-      }).catch(() => cachedResponse);
-
-      return cachedResponse || fetchPromise;
-    })
+    fetch(request).catch(() => caches.match(request))
   );
 });
 
 // Notifications
+let breakNotificationTimer = null;
+
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SHOW_NOTIFICATION') {
+  if (!event.data) return;
+
+  if (event.data.type === 'SHOW_NOTIFICATION') {
     const { title, body, icon, url } = event.data;
     const options = {
       body: body || 'AmbuFlow Update',
@@ -91,6 +66,31 @@ self.addEventListener('message', (event) => {
       data: { url: url || '/' }
     };
     event.waitUntil(self.registration.showNotification(title, options));
+  } else if (event.data.type === 'SCHEDULE_BREAK_NOTIFICATION') {
+    const { title, body, endTime, delay } = event.data;
+    if (breakNotificationTimer) {
+      clearTimeout(breakNotificationTimer);
+      breakNotificationTimer = null;
+    }
+    const msToWait = Math.max(0, endTime ? (endTime - Date.now()) : (delay || 0));
+    breakNotificationTimer = setTimeout(() => {
+      self.registration.showNotification(title || 'Fin de pause 🚑', {
+        body: body || 'Votre pause est terminée. Prêt pour la reprise !',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [400, 200, 400, 200, 600],
+        tag: 'break-timer-end',
+        renotify: true,
+        requireInteraction: true,
+        data: { url: '/', type: 'BREAK_END' }
+      });
+      breakNotificationTimer = null;
+    }, msToWait);
+  } else if (event.data.type === 'CANCEL_BREAK_NOTIFICATION') {
+    if (breakNotificationTimer) {
+      clearTimeout(breakNotificationTimer);
+      breakNotificationTimer = null;
+    }
   }
 });
 

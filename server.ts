@@ -9,12 +9,16 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { getFiveNearbyRestaurants } from './services/restaurantService';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFilename = typeof __filename !== 'undefined' ? __filename : (import.meta.url ? fileURLToPath(import.meta.url) : '');
+const currentDirname = typeof __dirname !== 'undefined' ? __dirname : (currentFilename ? path.dirname(currentFilename) : process.cwd());
 
 // Read Firebase config
-const firebaseConfigPath = path.join(__dirname, 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+const firebaseConfigPath = path.join(currentDirname, 'firebase-applet-config.json');
+const firebaseConfig = fs.existsSync(firebaseConfigPath)
+  ? JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'))
+  : (fs.existsSync(path.join(process.cwd(), 'firebase-applet-config.json'))
+      ? JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'))
+      : {});
 
 // ID de la base de données spécifique (priorité au config file si présent)
 const CUSTOM_DATABASE_ID = firebaseConfig.firestoreDatabaseId || '';
@@ -124,7 +128,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*all', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

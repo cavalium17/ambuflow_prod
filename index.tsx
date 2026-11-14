@@ -1,5 +1,6 @@
 
 import './src/suppressQuotaError';
+import './index.css';
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
@@ -10,36 +11,43 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-// Fonction d'enregistrement simplifiée et sécurisée pour le Service Worker
-const registerServiceWorker = () => {
-  // Les Service Workers nécessitent un contexte sécurisé (HTTPS ou localhost)
-  // et ne peuvent pas être enregistrés si la page elle-même est chargée via un blob
-  if ('serviceWorker' in navigator && window.isSecureContext) {
-    
-    // Si nous sommes dans un environnement de sandbox qui utilise des blobs, 
-    // l'enregistrement du SW échouera systématiquement.
-    if (window.location.protocol === 'blob:') {
-      console.debug('Service Worker : Enregistrement ignoré (protocole blob détecté).');
-      return;
-    }
+// Nettoyage immédiat des caches navigateur pour éliminer tout importmap ou module React obsolète
+if (typeof window !== 'undefined' && 'caches' in window) {
+  caches.keys().then((names) => {
+    names.forEach((name) => {
+      caches.delete(name);
+    });
+  }).catch(() => {});
+}
 
-    // Enregistrement du Service Worker principal pour le cache/PWA
-    navigator.serviceWorker.register('sw.js')
-      .then(reg => console.log('AmbuFlow SW Cache Ready:', reg.scope))
-      .catch(err => console.debug('SW Cache error:', err.message));
-
-    // Enregistrement du Service Worker FCM
-    navigator.serviceWorker.register('firebase-messaging-sw.js')
-      .then(reg => console.log('AmbuFlow FCM SW Ready:', reg.scope))
-      .catch(err => console.debug('FCM SW error:', err.message));
+// Gestion Service Worker : en développement on désenregistre les anciens workers pour garantir le HMR et éviter le cache
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  if (import.meta.env.DEV) {
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      registrations.forEach((r) => {
+        if (r.active?.scriptURL.includes('sw.js')) {
+          r.unregister();
+        }
+      });
+    }).catch(() => {});
+  } else if (window.isSecureContext && window.location.protocol !== 'blob:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then((reg) => console.log('[AmbuFlow PWA] SW Ready:', reg.scope))
+        .catch((err) => console.debug('[AmbuFlow PWA] SW registration notice:', err.message));
+    });
   }
-};
 
-// On s'assure que le document est prêt avant de tenter l'enregistrement
-if (document.readyState === 'complete') {
-  registerServiceWorker();
-} else {
-  window.addEventListener('load', registerServiceWorker);
+  // Enregistrement du Service Worker FCM pour les notifications
+  if (window.isSecureContext && window.location.protocol !== 'blob:') {
+    try {
+      navigator.serviceWorker.register('/firebase-messaging-sw.js')
+        .then(reg => console.log('AmbuFlow FCM SW Ready:', reg.scope))
+        .catch(err => console.debug('FCM SW error:', err.message));
+    } catch (err) {
+      console.debug('FCM SW exception:', err);
+    }
+  }
 }
 
 const root = ReactDOM.createRoot(rootElement);

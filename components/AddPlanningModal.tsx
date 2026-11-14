@@ -139,7 +139,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
   const isBalanceInsufficient = leaveDaysCount > currentBalance;
   const estimatedNewBalance = currentBalance === Infinity ? Infinity : currentBalance - leaveDaysCount;
 
-  const currentYear = new Date().getFullYear();
+  const currentYear = parseLocalDate(todayStr).getFullYear();
   const hasSolidariteThisYear = useMemo(() => {
     return shifts.some(s => 
       s.leaveType === 'SOLIDARITE' && 
@@ -614,7 +614,7 @@ export const AddPlanningModal: React.FC<AddPlanningModalProps> = ({
               </div>
 
               <div className="p-5 rounded-3xl border-2 bg-violet-500/10 border-violet-500/30 font-sans">
-                <p className="text-xs font-semibold leading-relaxed text-slate-300">
+                <p className={`text-xs font-semibold leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
                   Conformément à la convention collective nationale des transports routiers (secteur sanitaire), le jour férié chômé non travaillé donne lieu à un maintien de rémunération et compte pour <strong>7h de Temps de Travail Effectif (TTE)</strong>.
                 </p>
               </div>

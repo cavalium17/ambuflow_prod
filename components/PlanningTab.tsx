@@ -17,9 +17,16 @@ import {
   Plane,
   X,
   Sparkles,
-  Smile
+  Smile,
+  FileDown,
+  Check,
+  Eye,
+  Mail,
+  FileText,
+  CheckCircle2,
+  Download
 } from 'lucide-react';
-import { Shift, Break, ServiceStatus, AppTab } from '../types';
+import { Shift, Break, ServiceStatus, AppTab, MonthlyReportRecord } from '../types';
 import { 
   getLocalDateString, 
   parseLocalDate, 
@@ -31,8 +38,21 @@ import {
   toMinutes
 } from '../src/lib/dateUtils';
 import { PlanningSummary } from './PlanningSummary';
+import { WeeklyHoursChart, WeeklyChartMode } from './WeeklyHoursChart';
 import { AddPlanningModal } from './AddPlanningModal';
 import { EditShiftModal } from './EditShiftModal';
+import { PdfViewerModal } from './PdfViewerModal';
+import { GmailSendConfirmModal } from './GmailSendConfirmModal';
+import {
+  buildMonthlyPlanningPDF,
+  exportMonthlyPlanningPDF,
+  BuiltMonthlyPdfReport,
+  formatMinutesLabel
+} from '../src/lib/pdfExport';
+import {
+  getMonthlyPdfFromStorage,
+  saveMonthlyPdfToStorage
+} from '../src/lib/reportStorage';
 
 interface PlanningTabProps {
   darkMode?: boolean;
@@ -59,6 +79,13 @@ interface PlanningTabProps {
   initialCpBalance?: number;
   setInitialCpBalance?: React.Dispatch<React.SetStateAction<number>>;
   primaryRole?: string;
+  userName?: string;
+  companyName?: string;
+  userEmail?: string | null;
+  monthlyReports?: MonthlyReportRecord[];
+  onReportArchived?: (record: MonthlyReportRecord) => void;
+  onMarkReportSent?: (details: { monthKey: string; recipient: string; messageId: string }) => void;
+  onMarkReportFailed?: (monthKey: string, errorMessage: string) => void;
   onClearAllShifts?: () => Promise<void>;
   onDeleteShift?: (id: string) => Promise<void>;
 }
@@ -90,18 +117,33 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   initialCpBalance,
   setInitialCpBalance,
   primaryRole,
+  userName,
+  companyName,
+  userEmail,
+  monthlyReports = [],
+  onReportArchived,
+  onMarkReportSent,
+  onMarkReportFailed,
   onClearAllShifts,
   onDeleteShift
 }) => {
   const [viewType, setViewType] = useState<ViewType>('week');
+  const [chartMode, setChartMode] = useState<WeeklyChartMode>('day');
   const [currentPivotDate, setCurrentPivotDate] = useState<Date>(() => new Date(appCurrentTime));
   const [selectedDayLine, setSelectedDayLine] = useState<string | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [pdfExported, setPdfExported] = useState(false);
 
   // Modal States
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
   const [editingShift, setEditingShift] = useState<Shift | null>(null);
+  const [viewerReport, setViewerReport] = useState<BuiltMonthlyPdfReport | null>(null);
+  const [viewerRecord, setViewerRecord] = useState<MonthlyReportRecord | null>(null);
+  const [showPdfViewer, setShowPdfViewer] = useState(false);
+  const [emailModalReport, setEmailModalReport] = useState<BuiltMonthlyPdfReport | null>(null);
+  const [showEmailModal, setShowEmailModal] = useState(false);
 
   // 1. Calculate dates for current week view (Monday to Sunday)
   const weekDates = useMemo(() => {
@@ -116,6 +158,21 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
       return getLocalDateString(d);
     });
   }, [currentPivotDate]);
+
+  const currentWeekDates = useMemo(() => {
+    const pivot = new Date(appCurrentTime);
+    const day = pivot.getDay();
+    const diff = pivot.getDate() - day + (day === 0 ? -6 : 1);
+    const startOfWeek = new Date(pivot.setDate(diff));
+
+    return Array.from({ length: 7 }).map((_, i) => {
+      const d = new Date(startOfWeek);
+      d.setDate(startOfWeek.getDate() + i);
+      return getLocalDateString(d);
+    });
+  }, [appCurrentTime]);
+
+  const isViewingCurrentWeek = weekDates[0] === currentWeekDates[0];
 
   // 2. Calculate dates for current month view
   const monthInfo = useMemo(() => {
@@ -312,14 +369,295 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
     }
   }, [viewType, weekDates, monthInfo]);
 
+  const activeMonthLabel = useMemo(() => {
+    const raw = currentPivotDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }, [currentPivotDate]);
+
+  const buildReportForMonthDate = useCallback(
+    (targetDate: Date): BuiltMonthlyPdfReport => {
+      return buildMonthlyPlanningPDF({
+        shifts,
+        pivotDate: targetDate,
+        appCurrentTime,
+        activeShiftId,
+        status,
+        workRegime,
+        userName,
+        companyName
+      });
+    },
+    [shifts, appCurrentTime, activeShiftId, status, workRegime, userName, companyName]
+  );
+
+  const openViewerForMonth = useCallback(
+    async (targetDate: Date, existingRecord?: MonthlyReportRecord) => {
+      const built = buildReportForMonthDate(targetDate);
+      const cached = await getMonthlyPdfFromStorage(built.monthKey);
+      const finalReport: BuiltMonthlyPdfReport = cached
+        ? {
+            ...built,
+            blob: cached.blob,
+            base64: cached.base64
+          }
+        : built;
+
+      if (!cached) {
+        await saveMonthlyPdfToStorage(built.monthKey, built.base64);
+      }
+
+      const matchingRecord =
+        existingRecord || monthlyReports.find((r) => r.monthKey === built.monthKey) || null;
+      setViewerReport(finalReport);
+      setViewerRecord(matchingRecord);
+      setShowPdfViewer(true);
+    },
+    [buildReportForMonthDate, monthlyReports]
+  );
+
+  const openEmailForMonth = useCallback(
+    async (targetDate: Date) => {
+      const built = buildReportForMonthDate(targetDate);
+      const cached = await getMonthlyPdfFromStorage(built.monthKey);
+      const finalReport: BuiltMonthlyPdfReport = cached
+        ? {
+            ...built,
+            blob: cached.blob,
+            base64: cached.base64
+          }
+        : built;
+
+      if (!cached) {
+        await saveMonthlyPdfToStorage(built.monthKey, built.base64);
+      }
+
+      setEmailModalReport(finalReport);
+      setShowEmailModal(true);
+    },
+    [buildReportForMonthDate]
+  );
+
+  const handleExportPdf = useCallback(async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
+    try {
+      const built = exportMonthlyPlanningPDF({
+        shifts,
+        pivotDate: currentPivotDate,
+        appCurrentTime,
+        activeShiftId,
+        status,
+        workRegime,
+        userName,
+        companyName
+      });
+      await saveMonthlyPdfToStorage(built.monthKey, built.base64);
+      if (onReportArchived) {
+        const existing = monthlyReports.find((r) => r.monthKey === built.monthKey);
+        onReportArchived({
+          id: built.monthKey,
+          monthKey: built.monthKey,
+          monthTitle: built.monthTitle,
+          fileName: built.fileName,
+          generatedAt: new Date().toISOString(),
+          autoGenerated: existing?.autoGenerated ?? false,
+          emailStatus: existing?.emailStatus ?? 'pending',
+          emailSentAt: existing?.emailSentAt,
+          emailRecipient: existing?.emailRecipient,
+          gmailMessageId: existing?.gmailMessageId,
+          summary: built.summary
+        });
+      }
+      setPdfExported(true);
+      setTimeout(() => setPdfExported(false), 2500);
+    } catch (err) {
+      console.error('Erreur lors de la génération du PDF :', err);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }, [
+    isExportingPdf,
+    shifts,
+    currentPivotDate,
+    appCurrentTime,
+    activeShiftId,
+    status,
+    workRegime,
+    userName,
+    companyName,
+    onReportArchived,
+    monthlyReports
+  ]);
+
+  const sortedReports = useMemo(() => {
+    return [...monthlyReports].sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+  }, [monthlyReports]);
+
+  const pendingAutoReport = useMemo(() => {
+    return sortedReports.find((r) => r.autoGenerated && r.emailStatus !== 'sent') || null;
+  }, [sortedReports]);
+
+  const parseMonthKeyToDate = (monthKey: string): Date => {
+    const [y, m] = monthKey.split('-').map(Number);
+    return new Date(y || appCurrentTime.getFullYear(), (m || 1) - 1, 1);
+  };
+
   return (
     <div className="flex flex-col gap-6 pb-28">
+      {/* Top Action Header with Monthly PDF Viewer & Export */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <div className="min-w-0">
+          <h2 className={`text-lg font-black tracking-tight leading-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+            Planning
+          </h2>
+          <p className={`text-xs truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            Rapport mensuel · {activeMonthLabel}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => openViewerForMonth(currentPivotDate)}
+            title={`Visualiser le rapport PDF (${activeMonthLabel})`}
+            className={`min-h-[44px] px-3.5 py-2.5 rounded-2xl text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-2 border transition-all duration-200 active:scale-[0.98] ${
+              darkMode
+                ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-300 hover:bg-indigo-600/30'
+                : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 shadow-sm'
+            }`}
+          >
+            <Eye size={15} />
+            <span>Visualiser PDF</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportPdf}
+            disabled={isExportingPdf}
+            title={`Exporter le rapport mensuel (${activeMonthLabel}) en PDF`}
+            className={`min-h-[44px] px-4 py-2.5 rounded-2xl text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-2 border transition-all duration-200 active:scale-[0.98] disabled:opacity-60 ${
+              pdfExported
+                ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
+                : (darkMode
+                    ? 'bg-slate-900 border-white/10 text-white hover:bg-slate-800'
+                    : 'bg-white border-slate-200 text-slate-900 hover:bg-slate-50 shadow-sm')
+            }`}
+          >
+            {pdfExported ? <Check size={15} /> : <FileDown size={15} className="text-indigo-500" />}
+            <span>{pdfExported ? 'PDF exporté' : 'Exporter en PDF'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Pending 1st-of-month Auto Report Banner */}
+      {pendingAutoReport && (
+        <div
+          className={`p-4 rounded-[24px] border flex flex-wrap items-center justify-between gap-3 ${
+            darkMode
+              ? 'bg-indigo-950/35 border-indigo-500/30 text-white'
+              : 'bg-indigo-50 border-indigo-200 text-slate-900'
+          }`}
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+              <FileText size={18} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-black tracking-tight truncate">
+                Rapport mensuel automatique prêt · {pendingAutoReport.monthTitle}
+              </p>
+              <p className={`text-[11px] truncate ${darkMode ? 'text-indigo-200/80' : 'text-indigo-700'}`}>
+                Généré le 1er du mois · {formatMinutesLabel(pendingAutoReport.summary.totalEffectiveMinutes)} · {pendingAutoReport.summary.workShiftCount} garde(s)
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => openViewerForMonth(parseMonthKeyToDate(pendingAutoReport.monthKey), pendingAutoReport)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
+                darkMode
+                  ? 'bg-white/10 border-white/15 text-white hover:bg-white/15'
+                  : 'bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-50'
+              }`}
+            >
+              <Eye size={13} />
+              <span>Visualiser</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => openEmailForMonth(parseMonthKeyToDate(pendingAutoReport.monthKey))}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+            >
+              <Mail size={13} />
+              <span>Envoyer par Gmail</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Summary Stats */}
       <PlanningSummary 
         darkMode={darkMode} 
         totalHours={stats.totalHours} 
         totalCp={stats.totalCp} 
       />
+
+      {/* Weekly Worked Hours Bar Chart + Sort Toggle */}
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center justify-between gap-3 px-1">
+          <span className={`text-xs font-bold tracking-tight ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+            Répartition des heures
+          </span>
+          <div
+            role="group"
+            aria-label="Trier le graphique"
+            className={`p-1 rounded-2xl flex items-center gap-1 border shrink-0 ${
+              darkMode ? 'bg-slate-900 border-white/5' : 'bg-slate-100 border-slate-200'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => setChartMode('day')}
+              aria-pressed={chartMode === 'day'}
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all duration-200 ${
+                chartMode === 'day'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-600 hover:text-slate-900')
+              }`}
+            >
+              <Calendar size={13} />
+              <span>Par jour</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartMode('vehicle')}
+              aria-pressed={chartMode === 'vehicle'}
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all duration-200 ${
+                chartMode === 'vehicle'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : (darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-slate-600 hover:text-slate-900')
+              }`}
+            >
+              <Car size={13} />
+              <span>Par véhicule</span>
+            </button>
+          </div>
+        </div>
+
+        <WeeklyHoursChart
+          darkMode={darkMode}
+          shifts={shifts}
+          weekDates={viewType === 'week' ? weekDates : currentWeekDates}
+          appCurrentTime={appCurrentTime}
+          activeShiftId={activeShiftId}
+          status={status}
+          isCurrentWeek={viewType === 'week' ? isViewingCurrentWeek : true}
+          mode={chartMode}
+          availableVehicles={availableVehicles}
+        />
+      </div>
 
       {/* Control Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 w-full">
@@ -607,6 +945,133 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
         </div>
       )}
 
+      {/* Monthly PDF Reports Archive & Direct Viewer */}
+      <div
+        className={`p-5 rounded-[32px] border space-y-4 ${
+          darkMode ? 'bg-slate-900/40 border-white/5' : 'bg-white border-slate-100 shadow-sm'
+        }`}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className={`text-sm font-black tracking-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              Rapports mensuels PDF archivés
+            </h3>
+            <p className={`text-[11px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              Exportation automatique le 1er de chaque mois · Visualisation directe et envoi Gmail
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => openViewerForMonth(currentPivotDate)}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
+              darkMode
+                ? 'bg-white/5 border-white/10 text-slate-200 hover:bg-white/10'
+                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Eye size={13} className="text-indigo-500" />
+            <span>Aperçu {activeMonthLabel}</span>
+          </button>
+        </div>
+
+        {sortedReports.length === 0 ? (
+          <div
+            className={`p-4 rounded-2xl border border-dashed text-center text-xs ${
+              darkMode ? 'border-white/10 text-slate-400' : 'border-slate-200 text-slate-500'
+            }`}
+          >
+            Aucun rapport archivé pour le moment. Le rapport du mois précédent est généré automatiquement dès le 1er de chaque mois, ou vous pouvez visualiser/exporter {activeMonthLabel} ci-dessus.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {sortedReports.map((report) => {
+              const targetDate = parseMonthKeyToDate(report.monthKey);
+              const isSent = report.emailStatus === 'sent';
+              return (
+                <div
+                  key={report.monthKey}
+                  className={`p-3.5 rounded-2xl border flex flex-wrap items-center justify-between gap-3 ${
+                    darkMode ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200/70'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-600/15 text-indigo-500 flex items-center justify-center shrink-0">
+                      <FileText size={17} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-xs font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {report.monthTitle}
+                        </span>
+                        {report.autoGenerated && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-500">
+                            Auto 1er du mois
+                          </span>
+                        )}
+                        {isSent ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-500 flex items-center gap-1">
+                            <CheckCircle2 size={10} />
+                            Envoyé ({report.emailRecipient || 'Gmail'})
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-500">
+                            À envoyer par mail
+                          </span>
+                        )}
+                      </div>
+                      <p className={`text-[11px] mt-0.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {formatMinutesLabel(report.summary.totalEffectiveMinutes)} · {report.summary.workShiftCount} garde(s) · {report.summary.totalBreakCount} pause(s)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openViewerForMonth(targetDate, report)}
+                      className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        darkMode
+                          ? 'bg-slate-900 border-white/10 text-white hover:bg-slate-800'
+                          : 'bg-white border-slate-200 text-slate-800 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Eye size={13} className="text-indigo-500" />
+                      <span>Visualiser</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => openEmailForMonth(targetDate)}
+                      className="min-h-[36px] px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-all"
+                    >
+                      <Mail size={13} />
+                      <span>{isSent ? 'Renvoyer' : 'Gmail'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const built = buildReportForMonthDate(targetDate);
+                        await saveMonthlyPdfToStorage(built.monthKey, built.base64);
+                        built.doc.save(built.fileName);
+                      }}
+                      title={`Télécharger ${report.fileName}`}
+                      className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-all ${
+                        darkMode
+                          ? 'bg-slate-900 border-white/10 text-slate-300 hover:text-white'
+                          : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Download size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Modals */}
       <AddPlanningModal 
         darkMode={darkMode}
@@ -705,6 +1170,56 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
           </div>
         )}
       </AnimatePresence>
+
+      {/* In-App Direct PDF Viewer */}
+      <PdfViewerModal
+        isOpen={showPdfViewer}
+        onClose={() => setShowPdfViewer(false)}
+        report={viewerReport}
+        record={viewerRecord}
+        darkMode={darkMode}
+        onRequestSendEmail={() => {
+          if (viewerReport) {
+            setShowPdfViewer(false);
+            setEmailModalReport(viewerReport);
+            setShowEmailModal(true);
+          }
+        }}
+      />
+
+      {/* Gmail Send Confirmation Modal */}
+      <GmailSendConfirmModal
+        isOpen={showEmailModal}
+        onClose={() => setShowEmailModal(false)}
+        report={emailModalReport}
+        defaultRecipient={userEmail || ''}
+        darkMode={darkMode}
+        onPreviewPdf={() => {
+          if (emailModalReport) {
+            setShowEmailModal(false);
+            setViewerReport(emailModalReport);
+            setViewerRecord(
+              monthlyReports.find((r) => r.monthKey === emailModalReport.monthKey) || null
+            );
+            setShowPdfViewer(true);
+          }
+        }}
+        onSentSuccess={(details) => {
+          onMarkReportSent?.(details);
+          if (viewerRecord && viewerRecord.monthKey === details.monthKey) {
+            setViewerRecord({
+              ...viewerRecord,
+              emailStatus: 'sent',
+              emailRecipient: details.recipient,
+              gmailMessageId: details.messageId,
+              emailSentAt: new Date().toISOString()
+            });
+          }
+        }}
+        onSentError={(monthKey, err) => {
+          onMarkReportFailed?.(monthKey, err);
+        }}
+      />
     </div>
   );
 };

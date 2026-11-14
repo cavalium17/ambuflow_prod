@@ -9,18 +9,20 @@ export default defineConfig(({ mode }) => {
         port: 3000,
         host: '0.0.0.0',
       },
-      plugins: [react()],
+      plugins: [
+        react(),
+      ],
       build: {
         chunkSizeWarningLimit: 1000,
       },
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+      optimizeDeps: {
+        include: ['react', 'react-dom', 'react-dom/client', 'motion/react', 'lucide-react'],
       },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
-        }
+        },
+        dedupe: ['react', 'react-dom'],
       }
     };
 });

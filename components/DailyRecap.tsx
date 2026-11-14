@@ -39,7 +39,7 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
 }) => {
   const [shift, setShift] = React.useState(initialShift);
   const [editingItem, setEditingItem] = React.useState<{ type: 'shift' | 'break'; id?: string } | null>(null);
-  const [editData, setEditData] = React.useState<{ start: string; end: string; location?: string }>({ start: '', end: '' });
+  const [editData, setEditData] = React.useState<{ start: string; end: string; location?: 'Entreprise' | 'Extérieur' }>({ start: '', end: '' });
 
   // Update local shift if prop changes (external update)
   React.useEffect(() => {
@@ -61,7 +61,7 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
   const handleSave = () => {
     if (!editingItem) return;
 
-    let updatedShift = { ...shift };
+    const updatedShift = { ...shift };
 
     if (editingItem.type === 'shift') {
       updatedShift.start = editData.start;
@@ -72,10 +72,24 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
           const startMin = toMinutes(editData.start);
           const endMin = toMinutes(editData.end);
           let duration = endMin - startMin;
+          let finalEnd = editData.end;
           if (duration < 0) duration += 1440;
+          if (duration > 90) {
+            duration = 90;
+            const newEndMin = (startMin + 90) % 1440;
+            const h = Math.floor(newEndMin / 60);
+            const m = newEndMin % 60;
+            finalEnd = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+          }
           duration = Math.min(90, Math.max(1, duration));
           
-          return { ...b, start: editData.start, end: editData.end, location: editData.location, duration: duration };
+          return {
+            ...b,
+            start: editData.start,
+            end: finalEnd,
+            location: editData.location || b.location || 'Entreprise',
+            duration
+          };
         }
         return b;
       });
@@ -131,12 +145,12 @@ const DailyRecap: React.FC<DailyRecapProps> = ({
       totalAllowances += 15.54;
     }
 
-    // 2. Repas Unique (9.59€)
+    // 2. Repas Unique (9.81€)
     const sStart = startMin;
     const sEnd = endMin < startMin ? endMin + 1440 : endMin;
     const nightOverlap = Math.min(sEnd, 1860) - Math.max(sStart, 1320);
     if (nightOverlap >= 240) {
-      totalAllowances += 9.59;
+      totalAllowances += 9.81;
     }
 
     // 3. Spéciale (4.34€)

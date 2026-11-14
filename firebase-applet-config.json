@@ -1,10 +1,11 @@
 {
-  "projectId": "ambuflow-2da1b",
-  "appId": "1:1053097276309:web:2d99b3e33438be7609fc9c",
-  "apiKey": "AIzaSyDjFyyIYPj5cQVZfYuXr_dPPyKhOgNvpEQ",
-  "authDomain": "ambuflow-2da1b.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-bc6dd8d0-4580-4097-892c-7d8a2e1c3e27",
-  "storageBucket": "ambuflow-2da1b.firebasestorage.app",
-  "messagingSenderId": "1053097276309",
-  "measurementId": ""
+  "projectId": "gen-lang-client-0268064572",
+  "appId": "1:526885035316:web:cab75c683a36d00bd9d961",
+  "apiKey": "AIzaSyC74sNL4ZidcPDiHtjaYyoB6KrgYMJMnpc",
+  "authDomain": "gen-lang-client-0268064572.firebaseapp.com",
+  "storageBucket": "gen-lang-client-0268064572.firebasestorage.app",
+  "messagingSenderId": "526885035316",
+  "measurementId": "",
+  "oAuthClientId": "526885035316-odqm5ch9rcf1g19jjppsh43v9fn43tfl.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

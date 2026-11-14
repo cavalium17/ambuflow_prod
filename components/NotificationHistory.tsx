@@ -23,6 +23,7 @@ const NotificationHistory: React.FC<NotificationHistoryProps> = ({
     info: <Info className="text-blue-500" size={20} />,
     success: <CheckCircle2 className="text-emerald-500" size={20} />,
     warning: <AlertCircle className="text-amber-500" size={20} />,
+    error: <AlertCircle className="text-rose-500" size={20} />,
   };
 
   const formatTimestamp = (date: Date) => {
@@ -82,7 +83,7 @@ const NotificationHistory: React.FC<NotificationHistoryProps> = ({
         <div className="flex-1 overflow-y-auto no-scrollbar p-6 space-y-4">
           <AnimatePresence mode="popLayout" initial={false}>
             {notifications.length > 0 ? (
-              notifications.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((notif) => (
+              [...notifications].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((notif) => (
                 <motion.div
                   key={notif.id}
                   layout

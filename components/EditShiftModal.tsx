@@ -58,13 +58,17 @@ export const EditShiftModal: React.FC<EditShiftModalProps> = ({
   const isShiftPast = editingShift.day < todayStr;
 
   const isShiftValid = (() => {
-    if (editingShift.end === '--:--') return true;
+    if (!editingShift.start || editingShift.start === '--:--') return false;
+    if (!editingShift.end || editingShift.end === '--:--') return true;
     const sMin = toMinutes(editingShift.start);
-    const eMin = toMinutes(editingShift.end);
+    let eMin = toMinutes(editingShift.end);
+    if (eMin < sMin) eMin += 1440;
     const breaks = editingShift.breaks || [];
     for (const b of breaks) {
-      const bSMin = toMinutes(b.start);
-      const bEMin = toMinutes(b.end);
+      let bSMin = toMinutes(b.start);
+      let bEMin = toMinutes(b.end);
+      if (bSMin < sMin) bSMin += 1440;
+      if (bEMin < bSMin) bEMin += 1440;
       if (bSMin < sMin || bEMin > eMin) return false;
     }
     return true;

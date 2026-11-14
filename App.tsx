@@ -53,9 +53,11 @@ import {
   Loader2,
   Ambulance,
   Check,
-  HeartHandshake
+  HeartHandshake,
+  Sun,
+  Moon
 } from 'lucide-react';
-import { ServiceStatus, ActivityLog, AppTab, Shift, Break, UserStats, UserRole, UserProfile, PushNotification as PushType } from './types';
+import { ServiceStatus, ActivityLog, AppTab, Shift, Break, UserStats, UserRole, UserProfile, PushNotification as PushType, MonthlyReportRecord } from './types';
 import { getLocalDateString, getFrenchPublicHolidays, isSundayOrHoliday, calculateTotalDurationMinutes, parseLocalDate } from './src/lib/dateUtils';
 import Logo from './components/Logo';
 import PaieTab from './components/PaieTab';
@@ -66,14 +68,26 @@ import SplashScreen from './components/SplashScreen';
 import NotificationHistory from './components/NotificationHistory';
 import PushNotification from './components/PushNotification';
 import DailyRecap from './components/DailyRecap';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import Login from './components/Login';
+import { GmailSendConfirmModal } from './components/GmailSendConfirmModal';
 import { auth, db } from './src/firebaseConfig';
 import { onAuthStateChanged, User as FirebaseUser, signOut, deleteUser, reauthenticateWithPopup, GoogleAuthProvider, EmailAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, query, where, getDocs, deleteDoc, writeBatch, disableNetwork, enableNetwork } from 'firebase/firestore';
-import { requestNotificationPermissions, requestLocationPermissions, setupNotificationChannels } from './services/notificationManager';
+import { 
+  requestNotificationPermissions, 
+  setupNotificationChannels, 
+  playBreakEndAlarm, 
+  triggerBreakVibration, 
+  scheduleServiceWorkerBreakNotification, 
+  cancelServiceWorkerBreakNotification 
+} from './services/notificationManager';
 import { requestForToken, onMessageListener } from './src/firebaseConfig';
 import { handleFirestoreError, OperationType } from './src/services/firestoreErrorHandler';
 import { getFiveNearbyRestaurants, RestaurantSuggestion } from './services/restaurantService';
+import { buildMonthlyPlanningPDF, BuiltMonthlyPdfReport } from './src/lib/pdfExport';
+import { saveMonthlyPdfToStorage } from './src/lib/reportStorage';
+import { clearGmailSessionToken } from './src/services/gmailService';
 
 const isSameWeek = (d1: Date, d2: Date): boolean => {
   const getStartOfWeek = (d: Date) => {
@@ -212,12 +226,10 @@ interface ErrorBoundaryState {
   error: any;
 }
 
-class ErrorBoundary extends Component<any, any> {
-  props: any;
-  state = { hasError: false, error: null };
-  constructor(props: any) {
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+  constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.props = props;
   }
 
   static getDerivedStateFromError(error: any) {
@@ -233,12 +245,14 @@ class ErrorBoundary extends Component<any, any> {
     if (this.state.hasError) {
       let errorMessage = "Une erreur est survenue.";
       try {
-        const parsedError = JSON.parse(this.state.error.message);
-        if (parsedError.error) {
-          errorMessage = `Erreur Firestore (${parsedError.operationType}) : ${parsedError.error}`;
+        if (this.state.error && this.state.error.message) {
+          const parsedError = JSON.parse(this.state.error.message);
+          if (parsedError.error) {
+            errorMessage = `Erreur Firestore (${parsedError.operationType}) : ${parsedError.error}`;
+          }
         }
       } catch (e) {
-        errorMessage = this.state.error.message || errorMessage;
+        errorMessage = this.state.error?.message || errorMessage;
       }
 
       return (
@@ -352,7 +366,6 @@ const App: React.FC = () => {
   });
 
   const [pushEnabled, setPushEnabled] = useState(true);
-  const [currentGeoPosition, setCurrentGeoPosition] = useState<{ latitude: number; longitude: number; } | null>(null);
   const [shifts, setShifts] = useState<Shift[]>(() => {
     if (!localStorage.getItem('ambuflow_shifts_cleared_v2')) {
       localStorage.setItem('ambuflow_shifts', '[]');
@@ -459,6 +472,23 @@ const App: React.FC = () => {
     return 23.17;
   });
   const [lastCpAccrualDate, setLastCpAccrualDate] = useState<string>("");
+  const [lastSeniorityAccrualYear, setLastSeniorityAccrualYear] = useState<string>(() => {
+    const saved = localStorage.getItem('ambuflow_last_seniority_accrual_year');
+    return saved !== null ? saved : "";
+  });
+  const [lastMonthlyPdfReportMonth, setLastMonthlyPdfReportMonth] = useState<string>(() => {
+    return localStorage.getItem('ambuflow_last_monthly_pdf_report_month') || "";
+  });
+  const [monthlyReports, setMonthlyReports] = useState<MonthlyReportRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambuflow_monthly_reports');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [autoMonthlyConfirmReport, setAutoMonthlyConfirmReport] = useState<BuiltMonthlyPdfReport | null>(null);
+  const [showAutoMonthlyConfirmModal, setShowAutoMonthlyConfirmModal] = useState(false);
   const [customHours, setCustomHours] = useState("");
   const [weekendDays, setWeekendDays] = useState<string[]>([]);
   const [heureEmbauchePrevue, setHeureEmbauchePrevue] = useState<string>(() => {
@@ -472,14 +502,25 @@ const App: React.FC = () => {
     const saved = localStorage.getItem('ambuflow_jours_cp_pris_cycle');
     return saved !== null ? parseInt(saved, 10) : 0;
   });
-  const [followSystemTheme, setFollowSystemTheme] = useState(true);
-  const [themeChoice, setThemeChoice] = useState<'light' | 'dark'>('dark');
+  const [followSystemTheme, setFollowSystemTheme] = useState<boolean>(() => {
+    const saved = localStorage.getItem('ambuflow_follow_system_theme');
+    return saved !== null ? saved === 'true' : false;
+  });
+  const [themeChoice, setThemeChoice] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('ambuflow_theme_choice');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return 'dark';
+  });
   const [onboarded, setOnboarded] = useState<boolean>(true);
   const [roles, setRoles] = useState<UserRole[]>([]);
   const [primaryRole, setPrimaryRole] = useState<UserRole | ''>('');
   const [weeklyContractHours, setWeeklyContractHours] = useState(35);
   const [overtimeMode, setOvertimeMode] = useState<'weekly' | 'biweekly' | 'modulation' | 'annualized'>('weekly');
   const [payRateMode, setPayRateMode] = useState<'100_percent' | '90_percent'>('100_percent');
+  const [seniorityBonusDisplayMode, setSeniorityBonusDisplayMode] = useState<'separate_line' | 'integrated_rate'>(() => {
+    const saved = localStorage.getItem('ambuflow_seniority_bonus_display_mode');
+    return (saved === 'integrated_rate' || saved === 'separate_line') ? saved : 'separate_line';
+  });
   const [supplementaryTaskType, setSupplementaryTaskType] = useState<'none' | 'type_1' | 'type_2' | 'type_3'>('none');
   const [vehicleStatMode, setVehicleStatMode] = useState<'percent' | 'hours'>('percent');
 
@@ -544,7 +585,21 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('ambuflow_dismissed_shift_ids', JSON.stringify(dismissedShiftIds));
   }, [dismissedShiftIds]);
-  const [prefersDarkMode, setPrefersDarkMode] = useState(false);
+  const [prefersDarkMode, setPrefersDarkMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return true;
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const handler = (e: MediaQueryListEvent) => setPrefersDarkMode(e.matches);
+      mediaQuery.addEventListener('change', handler);
+      return () => mediaQuery.removeEventListener('change', handler);
+    }
+  }, []);
   const [showCancelDayModal, setShowCancelDayModal] = useState(false);
   const [selectedVehicleType, setSelectedVehicleType] = useState('ASSU');
   const [isQuotaExceeded, setIsQuotaExceeded] = useState(() => {
@@ -554,7 +609,7 @@ const App: React.FC = () => {
     return false;
   });
 
-  const addNotification = useCallback((title: string, message: string, type: 'info' | 'success' | 'warning') => {
+  const addNotification = useCallback((title: string, message: string, type: 'info' | 'success' | 'warning' | 'error') => {
     const newNotif: PushType = {
       id: Math.random().toString(36).substr(2, 9),
       title,
@@ -661,6 +716,33 @@ const App: React.FC = () => {
       return prev !== newVal ? newVal : prev;
     });
     if (config.lastCpAccrualDate !== undefined) setLastCpAccrualDate(prev => prev !== config.lastCpAccrualDate ? config.lastCpAccrualDate : prev);
+    if (config.lastSeniorityAccrualYear !== undefined) setLastSeniorityAccrualYear(prev => prev !== config.lastSeniorityAccrualYear ? config.lastSeniorityAccrualYear : prev);
+    if (config.lastMonthlyPdfReportMonth !== undefined) {
+      setLastMonthlyPdfReportMonth(prev => prev !== config.lastMonthlyPdfReportMonth ? config.lastMonthlyPdfReportMonth : prev);
+      try {
+        localStorage.setItem('ambuflow_last_monthly_pdf_report_month', config.lastMonthlyPdfReportMonth);
+      } catch {}
+    }
+    if (config.monthlyReports !== undefined && Array.isArray(config.monthlyReports)) {
+      setMonthlyReports(prev => {
+        const mergedMap = new Map<string, MonthlyReportRecord>();
+        config.monthlyReports.forEach((r: MonthlyReportRecord) => {
+          if (r?.monthKey) mergedMap.set(r.monthKey, r);
+        });
+        prev.forEach((localRec) => {
+          const remoteRec = mergedMap.get(localRec.monthKey);
+          if (!remoteRec) {
+            mergedMap.set(localRec.monthKey, localRec);
+          } else if (localRec.emailStatus === 'sent' && remoteRec.emailStatus !== 'sent') {
+            mergedMap.set(localRec.monthKey, localRec);
+          }
+        });
+        const merged = Array.from(mergedMap.values())
+          .sort((a, b) => b.monthKey.localeCompare(a.monthKey))
+          .slice(0, 36);
+        return JSON.stringify(prev) !== JSON.stringify(merged) ? merged : prev;
+      });
+    }
     if (config.customHours !== undefined) setCustomHours(prev => prev !== config.customHours ? config.customHours : prev);
     if (config.weekendDays !== undefined) setWeekendDays(prev => JSON.stringify(prev) !== JSON.stringify(config.weekendDays) ? config.weekendDays : prev);
     if (config.pushEnabled !== undefined) setPushEnabled(prev => prev !== config.pushEnabled ? config.pushEnabled : prev);
@@ -684,6 +766,11 @@ const App: React.FC = () => {
     if (config.weeklyContractHours !== undefined) setWeeklyContractHours(prev => prev !== config.weeklyContractHours ? config.weeklyContractHours : prev);
     if (config.overtimeMode !== undefined) setOvertimeMode(prev => prev !== config.overtimeMode ? config.overtimeMode : prev);
     if (config.payRateMode !== undefined) setPayRateMode(prev => prev !== config.payRateMode ? config.payRateMode : prev);
+    if (config.seniorityBonusDisplayMode !== undefined) {
+      const mode = config.seniorityBonusDisplayMode === 'integrated_rate' ? 'integrated_rate' : 'separate_line';
+      setSeniorityBonusDisplayMode(prev => prev !== mode ? mode : prev);
+      localStorage.setItem('ambuflow_seniority_bonus_display_mode', mode);
+    }
     if (config.supplementaryTaskType !== undefined) setSupplementaryTaskType(prev => prev !== config.supplementaryTaskType ? config.supplementaryTaskType : prev);
     if (config.status !== undefined) setStatus(prev => prev !== config.status ? config.status : prev);
     if (config.activeShiftId !== undefined) setActiveShiftId(prev => prev !== config.activeShiftId ? config.activeShiftId : prev);
@@ -762,6 +849,46 @@ const App: React.FC = () => {
 
   const effectiveDarkMode = followSystemTheme ? prefersDarkMode : (themeChoice === 'dark');
 
+  // Synchronisation des classes racines et couleur de thème du navigateur
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      if (effectiveDarkMode) {
+        document.documentElement.classList.add('dark');
+        document.documentElement.classList.remove('light');
+        document.body.style.backgroundColor = '#0B0E14';
+      } else {
+        document.documentElement.classList.remove('dark');
+        document.documentElement.classList.add('light');
+        document.body.style.backgroundColor = '#F8FAFC';
+      }
+      const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+      if (metaThemeColor) {
+        metaThemeColor.setAttribute('content', effectiveDarkMode ? '#0B0E14' : '#F8FAFC');
+      }
+    }
+  }, [effectiveDarkMode]);
+
+  // Bascule manuelle rapide entre sombre et clair indépendamment des préférences système
+  const handleToggleTheme = useCallback(() => {
+    const nextTheme: 'light' | 'dark' = effectiveDarkMode ? 'light' : 'dark';
+    setFollowSystemTheme(false);
+    setThemeChoice(nextTheme);
+    localStorage.setItem('ambuflow_theme_choice', nextTheme);
+    localStorage.setItem('ambuflow_follow_system_theme', 'false');
+  }, [effectiveDarkMode]);
+
+  const handleSetThemeChoice = useCallback((choice: 'light' | 'dark') => {
+    setThemeChoice(choice);
+    setFollowSystemTheme(false);
+    localStorage.setItem('ambuflow_theme_choice', choice);
+    localStorage.setItem('ambuflow_follow_system_theme', 'false');
+  }, []);
+
+  const handleSetFollowSystemTheme = useCallback((follow: boolean) => {
+    setFollowSystemTheme(follow);
+    localStorage.setItem('ambuflow_follow_system_theme', String(follow));
+  }, []);
+
   // Auth State Listener & Real-time Config Sync
   useEffect(() => {
     let unsubscribeSnapshot: (() => void) | null = null;
@@ -791,6 +918,7 @@ const App: React.FC = () => {
       if (!currentUser) {
         if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
         console.log("No user session found.");
+        clearGmailSessionToken();
         setUser(null);
         setIsAuthReady(true);
         setAuthLoading(false);
@@ -913,6 +1041,9 @@ const App: React.FC = () => {
       modulationWeeks,
       initialCpBalance,
       lastCpAccrualDate,
+      lastSeniorityAccrualYear,
+      lastMonthlyPdfReportMonth,
+      monthlyReports,
       customHours,
       weekendDays,
       pushEnabled,
@@ -927,6 +1058,7 @@ const App: React.FC = () => {
       weeklyContractHours,
       overtimeMode,
       payRateMode,
+      seniorityBonusDisplayMode,
       supplementaryTaskType,
       status,
       activeShiftId,
@@ -953,6 +1085,10 @@ const App: React.FC = () => {
     // Notifications are saved separately to avoid startup overwrite issues
     const { notifications: _, ...configToSave } = config;
     localStorage.setItem('ambuflow_config', JSON.stringify(configToSave));
+    try {
+      localStorage.setItem('ambuflow_monthly_reports', JSON.stringify(monthlyReports));
+      localStorage.setItem('ambuflow_last_monthly_pdf_report_month', lastMonthlyPdfReportMonth);
+    } catch {}
     
     // --- AUTH BYPASS FOR DEV Check ---
     if (!user || (user as any).uid === 'admin') {
@@ -979,7 +1115,7 @@ const App: React.FC = () => {
     } finally {
       isSavingRef.current = false;
     }
-  }, [user, userName, profileImage, jobTitle, hourlyRate, companyName, companyCity, firstName, lastName, qualifications, entryDate, workRegime, monthlyHours, leaveCalculation, autoGeo, hasDea, hasAux, hasTaxiCard, primaryGraduationDate, deaDate, auxDate, taxiDate, taxiCardExpiryDate, taxiFpcDate, afgsuDate, medicalExpiryDate, contractStartDate, contractType, hoursBase, cpCalculationMode, modulationStartDate, modulationWeeks, initialCpBalance, lastCpAccrualDate, customHours, weekendDays, pushEnabled, followSystemTheme, themeChoice, onboarded, heureEmbauchePrevue, soldeTotalCP, joursCPPrisCycle, roles, primaryRole, weeklyContractHours, overtimeMode, payRateMode, supplementaryTaskType, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications]);
+  }, [user, userName, profileImage, jobTitle, hourlyRate, companyName, companyCity, firstName, lastName, qualifications, entryDate, workRegime, monthlyHours, leaveCalculation, autoGeo, hasDea, hasAux, hasTaxiCard, primaryGraduationDate, deaDate, auxDate, taxiDate, taxiCardExpiryDate, taxiFpcDate, afgsuDate, medicalExpiryDate, contractStartDate, contractType, hoursBase, cpCalculationMode, modulationStartDate, modulationWeeks, initialCpBalance, lastCpAccrualDate, lastSeniorityAccrualYear, lastMonthlyPdfReportMonth, monthlyReports, customHours, weekendDays, pushEnabled, followSystemTheme, themeChoice, onboarded, heureEmbauchePrevue, soldeTotalCP, joursCPPrisCycle, roles, primaryRole, weeklyContractHours, overtimeMode, payRateMode, seniorityBonusDisplayMode, supplementaryTaskType, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications]);
 
   useEffect(() => {
     if (user || isGuest) {
@@ -988,7 +1124,7 @@ const App: React.FC = () => {
       }, 500); // Reduced debounce to 500ms for more reliable sync
       return () => clearTimeout(timeout);
     }
-  }, [user, isGuest, saveConfig, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications, contractStartDate, hourlyRate, payRateMode, supplementaryTaskType, initialCpBalance, userName, companyName, jobTitle, heureEmbauchePrevue, soldeTotalCP, joursCPPrisCycle]);
+  }, [user, isGuest, saveConfig, status, activeShiftId, scheduledShiftId, nextAutoStart, shifts, logs, breakStartDateTime, breakEndTimeActual, notifications, contractStartDate, hourlyRate, payRateMode, seniorityBonusDisplayMode, supplementaryTaskType, initialCpBalance, userName, companyName, jobTitle, heureEmbauchePrevue, soldeTotalCP, joursCPPrisCycle, lastMonthlyPdfReportMonth, monthlyReports]);
 
   // Handle page visibility and unload for critical data saving
   useEffect(() => {
@@ -1011,7 +1147,57 @@ const App: React.FC = () => {
     };
   }, [saveConfig]);
 
-  // Gestion des congés payés automatiques au 1er du mois
+  const seniorityInfo = useMemo(() => {
+    if (!contractStartDate) return { years: 0, months: 0, bonus: 0, extraDaysCP: 0, text: "N/A", detailedText: "N/A", nextAnniversaryText: "" };
+    const start = new Date(contractStartDate);
+    if (isNaN(start.getTime())) return { years: 0, months: 0, bonus: 0, extraDaysCP: 0, text: "N/A", detailedText: "N/A", nextAnniversaryText: "" };
+    const now = new Date();
+    
+    let years = now.getFullYear() - start.getFullYear();
+    let months = now.getMonth() - start.getMonth();
+    
+    if (months < 0 || (months === 0 && now.getDate() < start.getDate())) {
+      years--;
+      months += 12;
+    }
+    
+    let bonus = 0;
+    let extraDaysCP = 0;
+    if (years >= 20) {
+      bonus = 0.08;
+      extraDaysCP = 5;
+    } else if (years >= 15) {
+      bonus = 0.08;
+      extraDaysCP = 3;
+    } else if (years >= 10) {
+      bonus = 0.06;
+      extraDaysCP = 2;
+    } else if (years >= 5) {
+      bonus = 0.04;
+      extraDaysCP = 1;
+    } else if (years >= 2) {
+      bonus = 0.02;
+    }
+
+    // Calcul de la prochaine date anniversaire du contrat
+    const nextAnniv = new Date(now.getFullYear(), start.getMonth(), start.getDate());
+    if (now >= nextAnniv) {
+      nextAnniv.setFullYear(nextAnniv.getFullYear() + 1);
+    }
+    const nextAnniversaryText = nextAnniv.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+
+    return { 
+      years, 
+      months, 
+      bonus,
+      extraDaysCP,
+      text: years > 0 ? `${years} an${years > 1 ? 's' : ''}` : `${months} mois`,
+      detailedText: years > 0 ? `${years} an${years > 1 ? 's' : ''} ${months} mois` : `${months} mois`,
+      nextAnniversaryText
+    };
+  }, [contractStartDate]);
+
+  // Gestion des congés payés automatiques au 1er du mois (congés mensuels de base uniquement)
   useEffect(() => {
     if (!onboarded || configLoading) return;
 
@@ -1041,33 +1227,66 @@ const App: React.FC = () => {
         // If part-time or specific contract hours affect acquisition
         if (weeklyContractHours && weeklyContractHours < 35) {
           // Some agreements or companies pro-rate the acquisition days
-          // Though legally it's 2.5, here we follow user's instruction that it depends on the hours
           daysPerMonth = (daysPerMonth * weeklyContractHours) / 35;
         }
 
-        let totalToCredit = parseFloat((daysPerMonth * monthsDiff).toFixed(3));
-        
-        // Add seniority days if we reached a threshold this month or if we are catching up
-        // Seniority days are usually given once per year, but here we track if they apply
-        if (seniorityInfo.extraDaysCP > 0) {
-          // Just a simple credit check: if it's the anniversary month or first accrual
-          const anniversaryMonth = lastDate.getMonth() === new Date(contractStartDate || "").getMonth();
-          if (anniversaryMonth || !lastCpAccrualDate) {
-            totalToCredit += seniorityInfo.extraDaysCP;
-          }
-        }
+        const totalToCredit = parseFloat((daysPerMonth * monthsDiff).toFixed(3));
 
         setInitialCpBalance(prev => parseFloat((prev + totalToCredit).toFixed(3)));
         setLastCpAccrualDate(currentMonthStr);
         
         addNotification(
-          "Crédit Congés & Ancienneté",
-          `Votre solde a été crédité de ${totalToCredit.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} j (Base: ${daysPerMonth.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} j/mois ${seniorityInfo.extraDaysCP > 0 ? `+ ${seniorityInfo.extraDaysCP}j ancienneté` : ''}).`,
+          "Crédit mensuel de congés",
+          `Votre solde a été crédité de ${totalToCredit.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} j au titre de vos congés mensuels (${daysPerMonth.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} j/mois).`,
           'success'
         );
       }
     }
   }, [currentTime, onboarded, configLoading, lastCpAccrualDate, weeklyContractHours, cpCalculationMode, addNotification]);
+
+  // Attribution de la majoration d'ancienneté (jours de congés supplémentaires)
+  // RÈGLE : Ne s'incrémente UNIQUEMENT qu'à la date anniversaire du contrat de travail, une seule fois par an, et JAMAIS tous les mois !
+  useEffect(() => {
+    if (!onboarded || configLoading || !contractStartDate) return;
+
+    const startDate = new Date(contractStartDate);
+    if (isNaN(startDate.getTime())) return;
+
+    const currentYear = currentTime.getFullYear();
+    const currentYearStr = String(currentYear);
+
+    // Date anniversaire exacte pour l'année en cours (même jour et mois que le début du contrat)
+    const anniversaryDateThisYear = new Date(currentYear, startDate.getMonth(), startDate.getDate(), 0, 0, 0);
+
+    // Vérifier si la date courante a atteint ou dépassé la date anniversaire cette année
+    const hasReachedAnniversaryThisYear = currentTime >= anniversaryDateThisYear;
+
+    // Premier enregistrement : pour éviter un crédit intempestif au premier démarrage
+    if (!lastSeniorityAccrualYear) {
+      // Si l'anniversaire est déjà dépassé cette année, on marque l'année courante comme enregistrée
+      // Sinon l'année précédente pour déclencher le crédit quand l'anniversaire arrivera
+      const initialYear = hasReachedAnniversaryThisYear ? currentYearStr : String(currentYear - 1);
+      setLastSeniorityAccrualYear(initialYear);
+      localStorage.setItem('ambuflow_last_seniority_accrual_year', initialYear);
+      return;
+    }
+
+    const lastYearAccrued = parseInt(lastSeniorityAccrualYear, 10);
+
+    // Si la date anniversaire de cette année est atteinte et que la majoration n'a pas encore été attribuée pour cette année
+    if (hasReachedAnniversaryThisYear && (!lastYearAccrued || lastYearAccrued < currentYear)) {
+      if (seniorityInfo.extraDaysCP > 0) {
+        setInitialCpBalance(prev => parseFloat((prev + seniorityInfo.extraDaysCP).toFixed(3)));
+        addNotification(
+          "Majoration d'ancienneté",
+          `À l'occasion de votre date anniversaire de contrat (${seniorityInfo.years} an${seniorityInfo.years > 1 ? 's' : ''} d'ancienneté), votre solde de congés a été crédité de ${seniorityInfo.extraDaysCP} jour${seniorityInfo.extraDaysCP > 1 ? 's' : ''} de majoration d'ancienneté.`,
+          'success'
+        );
+      }
+      setLastSeniorityAccrualYear(currentYearStr);
+      localStorage.setItem('ambuflow_last_seniority_accrual_year', currentYearStr);
+    }
+  }, [currentTime, onboarded, configLoading, contractStartDate, lastSeniorityAccrualYear, seniorityInfo.extraDaysCP, seniorityInfo.years, addNotification]);
   // Permissions et Notifications
   useEffect(() => {
     // Demande de permissions Notifications
@@ -1082,11 +1301,7 @@ const App: React.FC = () => {
         requestForToken();
       }
     }
-    // Demande de permissions Géo
-    if (autoGeo && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(() => {}, () => {});
-    }
-  }, [pushEnabled, autoGeo]);
+  }, [pushEnabled]);
 
   // Écouteur de messages FCM en premier plan
   useEffect(() => {
@@ -1156,48 +1371,152 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [status, activeShiftId, shifts, pushEnabled, addNotification]);
 
-  // Notification Rapport Mensuel (1er du mois à 00:01)
-  // Logic merged into the more robust useEffect for CP accrual above
+  // Exportation PDF mensuelle automatique dès le 1er du mois (pour le mois précédent)
+  const autoPdfTriggeredMonthRef = useRef<string | null>(null);
 
-  const seniorityInfo = useMemo(() => {
-    if (!contractStartDate) return { years: 0, months: 0, bonus: 0, text: "N/A" };
-    const start = new Date(contractStartDate);
-    const now = new Date();
-    
-    let years = now.getFullYear() - start.getFullYear();
-    let months = now.getMonth() - start.getMonth();
-    
-    if (months < 0 || (months === 0 && now.getDate() < start.getDate())) {
-      years--;
-      months += 12;
-    }
-    
-    let bonus = 0;
-    let extraDaysCP = 0;
-    if (years >= 20) {
-      bonus = 0.08;
-      extraDaysCP = 5;
-    } else if (years >= 15) {
-      bonus = 0.08;
-      extraDaysCP = 3;
-    } else if (years >= 10) {
-      bonus = 0.06;
-      extraDaysCP = 2;
-    } else if (years >= 5) {
-      bonus = 0.04;
-      extraDaysCP = 1;
-    } else if (years >= 2) {
-      bonus = 0.02;
+  const handleArchiveReport = useCallback((record: MonthlyReportRecord) => {
+    setMonthlyReports(prev => {
+      const filtered = prev.filter(r => r.monthKey !== record.monthKey);
+      const next = [record, ...filtered]
+        .sort((a, b) => b.monthKey.localeCompare(a.monthKey))
+        .slice(0, 36);
+      try {
+        localStorage.setItem('ambuflow_monthly_reports', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleMarkReportSent = useCallback((details: { monthKey: string; recipient: string; messageId: string }) => {
+    const sentAt = new Date().toISOString();
+    setMonthlyReports(prev => {
+      const next = prev.map(r =>
+        r.monthKey === details.monthKey
+          ? {
+              ...r,
+              emailStatus: 'sent' as const,
+              emailRecipient: details.recipient,
+              gmailMessageId: details.messageId,
+              emailSentAt: sentAt,
+              emailError: undefined
+            }
+          : r
+      );
+      try {
+        localStorage.setItem('ambuflow_monthly_reports', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    addNotification(
+      "Rapport mensuel envoyé",
+      `Le rapport PDF (${details.monthKey}) a été envoyé sur votre boîte mail (${details.recipient}).`,
+      'success'
+    );
+  }, [addNotification]);
+
+  const handleMarkReportFailed = useCallback((monthKey: string, errorMessage: string) => {
+    setMonthlyReports(prev => {
+      const next = prev.map(r =>
+        r.monthKey === monthKey
+          ? {
+              ...r,
+              emailStatus: 'failed' as const,
+              emailError: errorMessage
+            }
+          : r
+      );
+      try {
+        localStorage.setItem('ambuflow_monthly_reports', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!onboarded || configLoading) return;
+    if (!user && !isGuest) return;
+
+    const currentMonthKey = `${currentTime.getFullYear()}-${String(currentTime.getMonth() + 1).padStart(2, '0')}`;
+    const prevMonthDate = new Date(currentTime.getFullYear(), currentTime.getMonth() - 1, 1);
+    const prevMonthKey = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
+
+    const alreadyArchivedPrevMonth = monthlyReports.some(r => r.monthKey === prevMonthKey);
+    if (lastMonthlyPdfReportMonth === currentMonthKey || alreadyArchivedPrevMonth) {
+      if (lastMonthlyPdfReportMonth !== currentMonthKey) {
+        setLastMonthlyPdfReportMonth(currentMonthKey);
+        try {
+          localStorage.setItem('ambuflow_last_monthly_pdf_report_month', currentMonthKey);
+        } catch {}
+      }
+      return;
     }
 
-    return { 
-      years, 
-      months, 
-      bonus,
-      extraDaysCP,
-      text: years > 0 ? `${years} an${years > 1 ? 's' : ''} ${months} mois` : `${months} mois`
+    if (autoPdfTriggeredMonthRef.current === currentMonthKey) return;
+    autoPdfTriggeredMonthRef.current = currentMonthKey;
+
+    const runAutoMonthlyExport = async () => {
+      try {
+        const built = buildMonthlyPlanningPDF({
+          shifts,
+          pivotDate: prevMonthDate,
+          appCurrentTime: currentTime,
+          activeShiftId,
+          status,
+          workRegime,
+          userName,
+          companyName
+        });
+
+        await saveMonthlyPdfToStorage(prevMonthKey, built.base64);
+
+        const newRecord: MonthlyReportRecord = {
+          id: prevMonthKey,
+          monthKey: prevMonthKey,
+          monthTitle: built.monthTitle,
+          fileName: built.fileName,
+          generatedAt: new Date().toISOString(),
+          autoGenerated: true,
+          emailStatus: 'pending',
+          summary: built.summary
+        };
+
+        handleArchiveReport(newRecord);
+        setLastMonthlyPdfReportMonth(currentMonthKey);
+        try {
+          localStorage.setItem('ambuflow_last_monthly_pdf_report_month', currentMonthKey);
+        } catch {}
+
+        addNotification(
+          `Rapport PDF prêt · ${built.monthTitle}`,
+          `Le rapport mensuel de ${built.monthTitle} a été généré automatiquement pour le 1er du mois. Envoyez-le sur votre boîte mail ou consultez-le dans l'onglet Agenda.`,
+          'info'
+        );
+
+        setAutoMonthlyConfirmReport(built);
+        setShowAutoMonthlyConfirmModal(true);
+      } catch (err) {
+        console.error("Erreur lors de l'exportation PDF automatique du 1er du mois :", err);
+      }
     };
-  }, [contractStartDate]);
+
+    runAutoMonthlyExport();
+  }, [
+    currentTime,
+    onboarded,
+    configLoading,
+    user,
+    isGuest,
+    lastMonthlyPdfReportMonth,
+    monthlyReports,
+    shifts,
+    activeShiftId,
+    status,
+    workRegime,
+    userName,
+    companyName,
+    handleArchiveReport,
+    addNotification
+  ]);
 
   const effectiveHourlyRate = useMemo(() => {
     const base = parseFloat(hourlyRate) || 0;
@@ -1208,8 +1527,13 @@ const App: React.FC = () => {
       type_3: 0.10
     };
     const taskBonus = taskBonusMap[supplementaryTaskType as keyof typeof taskBonusMap] || 0;
-    return (base * (1 + seniorityInfo.bonus + taskBonus)).toFixed(2);
-  }, [hourlyRate, seniorityInfo.bonus, supplementaryTaskType]);
+    if (seniorityBonusDisplayMode === 'integrated_rate') {
+      // Option B : Taux horaire majoré (ancienneté directement intégrée)
+      return (base * (1 + seniorityInfo.bonus + taskBonus)).toFixed(2);
+    }
+    // Option A (Par défaut) : Ligne séparée (le taux affiché reste le taux de base + tâche complémentaire éventuelle)
+    return (base * (1 + taskBonus)).toFixed(2);
+  }, [hourlyRate, seniorityInfo.bonus, supplementaryTaskType, seniorityBonusDisplayMode]);
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
@@ -1236,76 +1560,14 @@ const App: React.FC = () => {
     if (pushEnabled) {
       requestNotificationPermissions();
     }
-    if (autoGeo) {
-      requestLocationPermissions();
-    }
-  }, [pushEnabled, autoGeo]);
-
-  useEffect(() => {
-    if (!autoGeo || !navigator.geolocation) return;
-
-    let watchId: number | null = null;
-    let usingFallback = false;
-
-    const startWatching = (highAccuracy: boolean) => {
-      console.log(`Géolocalisation: Initialisation du suivi (Haute Précision: ${highAccuracy})...`);
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          setCurrentGeoPosition({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude
-          });
-        },
-        (err) => {
-          console.warn(`Erreur de suivi GPS (Haute Précision: ${highAccuracy}):`, err.message, "Code:", err.code);
-          
-          if (highAccuracy && !usingFallback) {
-            console.log("Repli de suivi automatique: Passage en précision standard (Wi-Fi/Cellules) pour contourner la mauvaise réception...");
-            usingFallback = true;
-            if (watchId !== null) {
-              navigator.geolocation.clearWatch(watchId);
-              watchId = null;
-            }
-            startWatching(false);
-          } else {
-            if (err.code === 1 || err.message.includes('permission') || err.message.includes('policy')) {
-              console.warn("L'accès au suivi de position GPS est restreint ou désactivé par la politique de sécurité.");
-            } else {
-              console.warn("Suivi de position GPS indisponible actuellement :", err.message);
-            }
-          }
-        },
-        { 
-          enableHighAccuracy: highAccuracy,
-          timeout: highAccuracy ? 5000 : 15000,
-          maximumAge: 5000
-        }
-      );
-    };
-
-    startWatching(true);
-
-    return () => {
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-      }
-    };
-  }, [autoGeo]);
+  }, [pushEnabled]);
 
   const addLog = useCallback((action: string, type: ActivityLog['type']) => {
     const now = currentTime;
-    let locationInfo: string | null = null;
-    if (autoGeo && currentGeoPosition) {
-      locationInfo = `Lat: ${currentGeoPosition.latitude.toFixed(5)}, Lng: ${currentGeoPosition.longitude.toFixed(5)}`;
-    }
-    const newLog: ActivityLog = { id: Math.random().toString(36).substr(2, 9), action, time: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), timestamp: now, location: locationInfo || undefined, type };
-    // We use locationInfo || undefined to respect the type, but sanitizeData will handle it.
-    // Actually, let's keep it null for Firestore safety if we weren't sanitizing, 
-    // but with sanitizeData, undefined will be dropped.
-    // Let's use a cleaner approach:
+    const newLog: ActivityLog = { id: Math.random().toString(36).substr(2, 9), action, time: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), timestamp: now, type };
     const finalLog = sanitizeData(newLog);
     setLogs(prev => [finalLog, ...prev]);
-  }, [currentTime, autoGeo, currentGeoPosition]);
+  }, [currentTime]);
 
   const handleSearchRestaurants = async () => {
     setLoading(true);
@@ -1314,53 +1576,26 @@ const App: React.FC = () => {
     setRestaurants([]);
     setSuggestedRestaurants([]);
 
-    const getGPSCoordinates = (): Promise<{ latitude: number; longitude: number }> => {
-      return new Promise((resolve, reject) => {
-        if (!navigator.geolocation) {
-          reject(new Error("La géolocalisation n'est pas supportée par ce navigateur."));
-          return;
+    const getCoordinatesForSearch = async (): Promise<{ latitude: number; longitude: number }> => {
+      if (companyCity && companyCity.trim().length > 0) {
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(companyCity.trim())}&format=json&limit=1`);
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0 && data[0].lat && data[0].lon) {
+              return { latitude: parseFloat(data[0].lat), longitude: parseFloat(data[0].lon) };
+            }
+          }
+        } catch (e) {
+          // fallback
         }
-
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            resolve({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            });
-          },
-          (err) => {
-            console.warn("Échec Tentative GPS Matériel (Haute Précision):", err.message);
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                resolve({
-                  latitude: pos.coords.latitude,
-                  longitude: pos.coords.longitude
-                });
-              },
-              (fallbackErr) => {
-                reject(new Error(`Impossible de récupérer votre position GPS (triangulation réseau échouée) : ${fallbackErr.message}`));
-              },
-              { enableHighAccuracy: false, timeout: 5000 }
-            );
-          },
-          { enableHighAccuracy: true, timeout: 5000 }
-        );
-      });
+      }
+      return { latitude: 48.8566, longitude: 2.3522 };
     };
 
     try {
-      let coords;
-      try {
-        coords = await getGPSCoordinates();
-      } catch (gpsError: any) {
-        console.warn("Échec de la récupération GPS pour la recherche des restaurants :", gpsError.message);
-        setError("Géolocalisation requise : Vrai GPS ou triangulation réseau indisponible. L'activation de la géolocalisation du smartphone/navigateur est obligatoire pour trouver de vrais restaurants réels à proximité.");
-        setLoading(false);
-        setSearchLoading(false);
-        return; // Échec GPS bloquant l'application pour empêcher toute recherche bidon ou erronée
-      }
-
-      console.log(`Recherche de restos avec coordinates réelles: Lat ${coords.latitude}, Lng ${coords.longitude}, Véhicule: ${selectedVehicleType}`);
+      const coords = await getCoordinatesForSearch();
+      console.log(`Recherche de restos: Lat ${coords.latitude}, Lng ${coords.longitude}, Véhicule: ${selectedVehicleType}`);
       const results = await getFiveNearbyRestaurants(
         selectedVehicleType,
         coords.latitude,
@@ -1376,12 +1611,12 @@ const App: React.FC = () => {
         setRestaurants([]);
         setSuggestedRestaurants([]);
         if (!error) {
-          setError("Aucun établissement réel de restauration trouvé dans un rayon de trajet acceptable autour de votre position.");
+          setError("Aucun établissement réel de restauration trouvé dans un rayon de trajet acceptable autour de votre secteur.");
         }
       }
-    } catch (apiError: any) {
-      console.error("Erreur serveur/APIs recherche restaurant:", apiError);
-      setError("Une erreur est survenue lors de la recherche des restaurants : " + (apiError.message || String(apiError)));
+    } catch (err: any) {
+      console.warn("Échec de la recherche de restaurants :", err.message);
+      setError("Impossible de charger les suggestions de restaurants pour le moment.");
     } finally {
       setLoading(false);
       setSearchLoading(false);
@@ -1639,7 +1874,8 @@ const App: React.FC = () => {
   }, [user, shifts, activeShiftId, currentTime, addNotification]);
 
   const handleAnnulerJournee = async (forceWithoutConfirm = false) => {
-    if (!forceWithoutConfirm && !window.confirm("Voulez-vous vraiment annuler cette journée ? Toutes les heures et pauses d'aujourd'hui seront effacées.")) {
+    if (!forceWithoutConfirm) {
+      setShowCancelDayModal(true);
       return;
     }
 
@@ -1686,39 +1922,23 @@ const App: React.FC = () => {
         }), { merge: true });
       }
 
-      alert("Journée annulée avec succès et planning libéré !");
+      addNotification("Journée annulée", "Journée annulée avec succès et planning libéré !", "success");
     } catch (error) {
       console.error("Erreur lors du déverrouillage :", error);
     }
   };
 
-  const handleResetAll = async () => {
-    if (window.confirm("Êtes-vous sûr de vouloir annuler et supprimer la journée en cours ? Toutes les heures d'aujourd'hui seront effacées.")) {
-      setServiceStatus('OFF');
-      setStatus(ServiceStatus.OFF);
-      setCurrentShift(null);
-      setDailyMinutes(0);
-      setBreakMinutes(0);
-      setIsOnBreak(false);
-
-      localStorage.removeItem('ambu_service_status');
-      localStorage.removeItem('ambu_current_shift');
-      localStorage.removeItem('ambu_daily_minutes');
-      localStorage.removeItem('ambu_break_minutes');
-      localStorage.removeItem('ambu_is_on_break');
-      localStorage.removeItem('ambu_break_start_time');
-      localStorage.removeItem('ambuflow_status');
-      localStorage.removeItem('ambuflow_active_shift_id');
-      localStorage.removeItem('ambuflow_break_start_datetime');
-      localStorage.removeItem('ambuflow_break_end');
-
-      await handleAnnulerJournee(true);
-    }
+  const handleResetAll = () => {
+    setShowCancelDayModal(true);
   };
 
   const handleResume = useCallback(async (customTime?: Date) => {
     const resumeTime = customTime || new Date();
     
+    // Annuler toute notification en attente dans le Service Worker
+    cancelServiceWorkerBreakNotification();
+    localStorage.removeItem('ambuflow_break_notified_end');
+
     // First, let's prepare the updated shifts locally so we can write immediately
     let updatedShifts = [...shifts];
     if (activeShiftId && status === ServiceStatus.BREAK) {
@@ -1728,24 +1948,32 @@ const App: React.FC = () => {
           const lastIndex = updatedBreaks.length - 1;
           const lastBreak = { ...updatedBreaks[lastIndex] };
           
-          // Calcul de la durée réelle consommée
-          const [startH, startM] = lastBreak.start.split(':').map(Number);
-          const startDate = new Date(resumeTime);
-          startDate.setHours(startH, startM, 0, 0);
-          
-          let diffMs = resumeTime.getTime() - startDate.getTime();
-          // Si le diff est négatif, c'est que la pause a traversé minuit
-          if (diffMs < 0) {
-            diffMs += 24 * 60 * 60 * 1000;
+          const plannedDuration = lastBreak.duration || (lastBreak.isMeal ? 30 : 20);
+
+          // Si la reprise se fait après ou à la fin du décompte prévu (ex: téléphone éteint)
+          // on conserve impérativement la durée de pause sélectionnée par l'utilisateur
+          if (breakEndTimeActual && resumeTime.getTime() >= breakEndTimeActual.getTime()) {
+            lastBreak.duration = plannedDuration;
+            lastBreak.end = breakEndTimeActual.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+          } else {
+            // Reprise anticipée avant la fin du temps sélectionné
+            const [startH, startM] = lastBreak.start.split(':').map(Number);
+            const startDate = new Date(resumeTime);
+            startDate.setHours(startH, startM, 0, 0);
+            
+            let diffMs = resumeTime.getTime() - startDate.getTime();
+            if (diffMs < 0) {
+              diffMs += 24 * 60 * 60 * 1000;
+            }
+            
+            let actualDuration = Math.round(diffMs / 60000);
+            actualDuration = Math.min(plannedDuration, Math.max(1, actualDuration));
+            
+            lastBreak.duration = actualDuration;
+            lastBreak.end = resumeTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
           }
           
-          let actualDuration = Math.round(diffMs / 60000);
-          actualDuration = Math.min(90, Math.max(1, actualDuration));
-          
-          lastBreak.duration = actualDuration;
-          lastBreak.end = resumeTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
           updatedBreaks[lastIndex] = lastBreak;
-          
           return { ...s, breaks: updatedBreaks };
         }
         return s;
@@ -1753,16 +1981,11 @@ const App: React.FC = () => {
     }
 
     // Prepare updated logs locally
-    let locationInfo: string | null = null;
-    if (autoGeo && currentGeoPosition) {
-      locationInfo = `Lat: ${currentGeoPosition.latitude.toFixed(5)}, Lng: ${currentGeoPosition.longitude.toFixed(5)}`;
-    }
     const newLog: ActivityLog = { 
       id: Math.random().toString(36).substr(2, 9), 
       action: "Reprise de mission", 
       time: resumeTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), 
       timestamp: resumeTime, 
-      location: locationInfo || undefined, 
       type: "resume" 
     };
     const finalLog = sanitizeData(newLog);
@@ -1778,6 +2001,9 @@ const App: React.FC = () => {
     // Save end break states to localStorage immediately
     localStorage.removeItem('ambuflow_break_start_datetime');
     localStorage.removeItem('ambuflow_break_end');
+    localStorage.removeItem('ambuflow_break_duration');
+    localStorage.removeItem('ambuflow_break_type');
+    localStorage.removeItem('ambuflow_break_notified_end');
 
     // 2. Direct database update to Firestore
     if (user && user.uid !== 'local_user' && (user as any).uid !== 'admin') {
@@ -1815,6 +2041,7 @@ const App: React.FC = () => {
         modulationWeeks,
         initialCpBalance,
         lastCpAccrualDate,
+        lastSeniorityAccrualYear,
         customHours,
         weekendDays,
         pushEnabled,
@@ -1826,6 +2053,7 @@ const App: React.FC = () => {
         weeklyContractHours,
         overtimeMode,
         payRateMode,
+        seniorityBonusDisplayMode,
         supplementaryTaskType,
         status: ServiceStatus.WORKING,
         activeShiftId,
@@ -1870,7 +2098,6 @@ const App: React.FC = () => {
     shifts,
     logs,
     autoGeo,
-    currentGeoPosition,
     user,
     userName,
     profileImage,
@@ -1904,6 +2131,7 @@ const App: React.FC = () => {
     modulationWeeks,
     initialCpBalance,
     lastCpAccrualDate,
+    lastSeniorityAccrualYear,
     customHours,
     weekendDays,
     pushEnabled,
@@ -1915,6 +2143,7 @@ const App: React.FC = () => {
     weeklyContractHours,
     overtimeMode,
     payRateMode,
+    seniorityBonusDisplayMode,
     supplementaryTaskType,
     scheduledShiftId,
     nextAutoStart,
@@ -1922,6 +2151,8 @@ const App: React.FC = () => {
   ]);
 
   const handleOpenBreakModal = useCallback((type: 'meal' | 'coffee') => {
+    // Demander la permission notification si pas encore accordée
+    requestNotificationPermissions().catch(() => {});
     setBreakType(type);
     setBreakStartTime(currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }));
     setBreakDuration(type === 'meal' ? 30 : 20);
@@ -1945,10 +2176,15 @@ const App: React.FC = () => {
 
   const handleConfirmBreak = useCallback(async () => {
     // breakStartTime handles the "Début de pause" selected by the user (e.g. "12:00")
+    const now = new Date();
     const hParts = breakStartTime.split(':').map(Number);
     const startDate = new Date();
     if (hParts.length === 2 && !isNaN(hParts[0]) && !isNaN(hParts[1])) {
-      startDate.setHours(hParts[0], hParts[1], 0, 0);
+      if (hParts[0] === now.getHours() && hParts[1] === now.getMinutes()) {
+        startDate.setTime(now.getTime());
+      } else {
+        startDate.setHours(hParts[0], hParts[1], 0, 0);
+      }
     }
 
     const safeDuration = Math.min(90, Math.max(1, breakDuration));
@@ -1965,6 +2201,14 @@ const App: React.FC = () => {
     // Persist immediately to localStorage
     localStorage.setItem('ambuflow_break_start_datetime', startDate.toISOString());
     localStorage.setItem('ambuflow_break_end', endDate.toISOString());
+    localStorage.setItem('ambuflow_break_duration', safeDuration.toString());
+    localStorage.setItem('ambuflow_break_type', breakType);
+    localStorage.removeItem('ambuflow_break_notified_end');
+
+    // Programmer la notification de fin de pause dans le Service Worker (pour fonctionner téléphone éteint / veille)
+    const breakTitle = breakType === 'meal' ? '🍽️ Fin de pause repas' : '☕ Fin de pause café';
+    const breakMsg = `Votre pause de ${safeDuration} min est terminée. Prêt pour la reprise de service !`;
+    scheduleServiceWorkerBreakNotification(breakTitle, breakMsg, endDate.getTime());
 
     let updatedShifts = [...shifts];
     if (activeShiftId) {
@@ -2008,16 +2252,11 @@ const App: React.FC = () => {
     }
     
     // Prepare updated logs locally
-    let locationInfo: string | null = null;
-    if (autoGeo && currentGeoPosition) {
-      locationInfo = `Lat: ${currentGeoPosition.latitude.toFixed(5)}, Lng: ${currentGeoPosition.longitude.toFixed(5)}`;
-    }
     const newLog: ActivityLog = { 
       id: Math.random().toString(36).substr(2, 9), 
       action: logAction, 
       time: startDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), 
       timestamp: startDate, 
-      location: locationInfo || undefined, 
       type: "break" 
     };
     const finalLog = sanitizeData(newLog);
@@ -2065,6 +2304,7 @@ const App: React.FC = () => {
         modulationWeeks,
         initialCpBalance,
         lastCpAccrualDate,
+        lastSeniorityAccrualYear,
         customHours,
         weekendDays,
         pushEnabled,
@@ -2076,6 +2316,7 @@ const App: React.FC = () => {
         weeklyContractHours,
         overtimeMode,
         payRateMode,
+        seniorityBonusDisplayMode,
         supplementaryTaskType,
         status: nextStatus,
         activeShiftId,
@@ -2118,7 +2359,6 @@ const App: React.FC = () => {
     shifts,
     logs,
     autoGeo,
-    currentGeoPosition,
     user,
     userName,
     profileImage,
@@ -2152,6 +2392,7 @@ const App: React.FC = () => {
     modulationWeeks,
     initialCpBalance,
     lastCpAccrualDate,
+    lastSeniorityAccrualYear,
     customHours,
     weekendDays,
     pushEnabled,
@@ -2163,6 +2404,7 @@ const App: React.FC = () => {
     weeklyContractHours,
     overtimeMode,
     payRateMode,
+    seniorityBonusDisplayMode,
     supplementaryTaskType,
     scheduledShiftId,
     nextAutoStart,
@@ -2171,15 +2413,15 @@ const App: React.FC = () => {
 
   const renderBreakTimer = useCallback(() => {
     if (!breakStartDateTime || !breakEndTimeActual) return "00:00";
-    if (currentTime < breakStartDateTime) {
-      const diff = breakStartDateTime.getTime() - currentTime.getTime();
+    const nowMs = currentTime.getTime();
+    if (nowMs < breakStartDateTime.getTime()) {
+      const diff = breakStartDateTime.getTime() - nowMs;
       const m = Math.floor(diff / 60000);
       const s = Math.floor((diff % 60000) / 1000);
       return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }
-    const nowMs = currentTime.getTime();
     if (nowMs >= breakEndTimeActual.getTime()) {
-      return "PAUSE EXPIRÉE";
+      return "00:00";
     }
     const diffMs = breakEndTimeActual.getTime() - nowMs;
     const totalSecsLeft = Math.max(0, Math.floor(diffMs / 1000));
@@ -2258,6 +2500,7 @@ const App: React.FC = () => {
         weeklyContractHours: 35,
         overtimeMode: "weekly",
         payRateMode: "100_percent",
+        seniorityBonusDisplayMode: "separate_line",
         activeShiftId: null,
         scheduledShiftId: null,
         shifts: [],
@@ -2515,35 +2758,61 @@ const App: React.FC = () => {
     }
   }, [currentTime, configLoading, status, heureEmbauchePrevue, shifts, handleStartService, addNotification]);
 
-  // Listen to visibilitychange / window focus to catch wake-ups immediately
+  // Surveillance du réveil du téléphone (screen off / lock / reboot / onglet en arrière-plan)
   useEffect(() => {
     const checkWakeUp = () => {
       const now = new Date();
-      setCurrentTime(now); // Force clock sync immediately
+      setCurrentTime(now); // Synchronisation instantanée avec l'horloge réelle du système
 
       const savedEnd = localStorage.getItem('ambuflow_break_end');
-      if (status === ServiceStatus.BREAK && savedEnd) {
+      const savedStatus = localStorage.getItem('ambuflow_status');
+      if (savedStatus === ServiceStatus.BREAK && savedEnd) {
         const endTime = new Date(savedEnd);
         if (now.getTime() >= endTime.getTime()) {
-          console.log("Wake up: Break time exceeded, auto-validating pause.");
-          handleResume(now);
+          console.log("Wake up: Décompte de pause achevé.");
+          const alreadyNotified = localStorage.getItem('ambuflow_break_notified_end');
+          if (!alreadyNotified) {
+            localStorage.setItem('ambuflow_break_notified_end', 'true');
+            playBreakEndAlarm();
+            triggerBreakVibration();
+            addNotification(
+              "PAUSE TERMINÉE",
+              "Votre temps de pause sélectionné est écoulé. Prêt pour la reprise !",
+              "warning"
+            );
+          }
         }
       }
     };
 
     document.addEventListener('visibilitychange', checkWakeUp);
     window.addEventListener('focus', checkWakeUp);
+    window.addEventListener('pageshow', checkWakeUp);
+    window.addEventListener('online', checkWakeUp);
     return () => {
       document.removeEventListener('visibilitychange', checkWakeUp);
       window.removeEventListener('focus', checkWakeUp);
+      window.removeEventListener('pageshow', checkWakeUp);
+      window.removeEventListener('online', checkWakeUp);
     };
-  }, [status, handleResume]);
+  }, [addNotification]);
 
+  // Alerte en direct quand le décompte arrive à 00:00 avec écran allumé
   useEffect(() => {
-    if (status === ServiceStatus.BREAK && breakEndTimeActual && currentTime >= breakEndTimeActual) {
-      handleResume(currentTime);
+    if (status === ServiceStatus.BREAK && breakEndTimeActual && currentTime.getTime() >= breakEndTimeActual.getTime()) {
+      const alreadyNotified = localStorage.getItem('ambuflow_break_notified_end');
+      if (!alreadyNotified) {
+        localStorage.setItem('ambuflow_break_notified_end', 'true');
+        playBreakEndAlarm();
+        triggerBreakVibration();
+        addNotification(
+          "PAUSE TERMINÉE",
+          "Le temps de pause sélectionné est écoulé. Prêt pour la reprise de mission !",
+          "warning"
+        );
+      }
     }
-  }, [currentTime, status, breakEndTimeActual, handleResume]);
+  }, [currentTime, status, breakEndTimeActual, addNotification]);
 
 
 
@@ -2886,16 +3155,16 @@ const App: React.FC = () => {
 
     // Nouvelles indemnités
     const IND_REPAS = 15.54;
-    const IND_REPAS_UNIQUE = 9.59;
+    const IND_REPAS_UNIQUE = 9.81;
     const IND_SPECIALE = 4.34;
     const IND_DIMANCHE_FERIE = 23.90;
 
     todayShifts.forEach(s => {
       if (
         s.isFerieChome === true || 
-        s.isFerieChome === 'true' || 
+        (s as any).isFerieChome === 'true' || 
         s.isCP === true || 
-        s.isCP === 'true' || 
+        (s as any).isCP === 'true' || 
         (s.isLeave && s.leaveType === 'CP') || 
         s.type === 'CP' || 
         s.type === 'FERIE'
@@ -2947,7 +3216,7 @@ const App: React.FC = () => {
           currentAllowances += IND_REPAS;
         }
 
-        // 2. Indemnité de repas unique (9.59€)
+        // 2. Indemnité de repas unique (9.81€)
         const sStart = startMin;
         const sEnd = endMin < startMin ? endMin + 1440 : endMin;
         const overlapStart = Math.max(sStart, 1320);
@@ -2971,14 +3240,16 @@ const App: React.FC = () => {
     });
 
     const hourly = parseFloat(effectiveHourlyRate) || 12.79;
-    totalGainsBrut += (totalEffectiveMin / 60) * hourly;
+    const baseWages = (totalEffectiveMin / 60) * hourly;
+    const seniorityBonus = seniorityBonusDisplayMode === 'separate_line' ? baseWages * (seniorityInfo?.bonus || 0) : 0;
+    totalGainsBrut += baseWages + seniorityBonus;
     
     return {
       amplitude: `${Math.floor(totalAmplitudeMin / 60).toString().padStart(2, '0')}:${(totalAmplitudeMin % 60).toString().padStart(2, '0')}`,
       gains: totalGainsBrut.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
       effective: totalEffectiveMin
     };
-  }, [shifts, currentTime, activeShiftId, effectiveHourlyRate, calculateEffectiveMinutes, status, breakStartDateTime]);
+  }, [shifts, currentTime, activeShiftId, effectiveHourlyRate, calculateEffectiveMinutes, status, breakStartDateTime, seniorityBonusDisplayMode, seniorityInfo.bonus]);
 
   const gainsCarouselStats = useMemo(() => {
     const calculateGainsForPeriod = (start: Date, end: Date) => {
@@ -2989,14 +3260,16 @@ const App: React.FC = () => {
       });
 
       const IND_REPAS = 15.54;
-      const IND_REPAS_UNIQUE = 9.59;
+      const IND_REPAS_UNIQUE = 9.81;
       const IND_SPECIALE = 4.34;
       const IND_DIMANCHE_FERIE = 23.90;
 
+      const seniorityBonusMultiplier = seniorityBonusDisplayMode === 'separate_line' ? (1 + (seniorityInfo?.bonus || 0)) : 1;
+
       periodShifts.forEach(s => {
-        if (s.isFerieChome === true || s.isFerieChome === 'true' || s.isCP === true || s.isCP === 'true' || (s.isLeave && s.leaveType === 'CP')) {
+        if (s.isFerieChome === true || (s as any).isFerieChome === 'true' || s.isCP === true || (s as any).isCP === 'true' || (s.isLeave && s.leaveType === 'CP')) {
           const hourly = parseFloat(effectiveHourlyRate) || 12.79;
-          total += 7 * hourly;
+          total += 7 * hourly * seniorityBonusMultiplier;
           return;
         }
         if (s.isLeave || s.vehicle === 'CONGÉ') return;
@@ -3026,7 +3299,7 @@ const App: React.FC = () => {
           
           const effective = calculateEffectiveMinutes(s);
           const hourly = parseFloat(effectiveHourlyRate) || 12.79;
-          total += (effective / 60) * hourly;
+          total += (effective / 60) * hourly * seniorityBonusMultiplier;
 
           // Indemnités
           const hasExternalBreak = s.breaks?.some(b => b.location === 'Extérieur');
@@ -3089,7 +3362,7 @@ const App: React.FC = () => {
       { label: 'Gains Semaine (Net)', value: currentWeekGains, trend: getTrend(currentWeekGains, prevWeekGains) },
       { label: 'Gains Mois (Net)', value: currentMonthGains, trend: getTrend(currentMonthGains, prevMonthGains) }
     ];
-  }, [shifts, currentTime, activeShiftId, effectiveHourlyRate, calculateEffectiveMinutes, status, breakStartDateTime]);
+  }, [shifts, currentTime, activeShiftId, effectiveHourlyRate, calculateEffectiveMinutes, status, breakStartDateTime, seniorityBonusDisplayMode, seniorityInfo.bonus]);
 
   const vehicleDistribution = useMemo(() => {
     let assuMin = 0;
@@ -3289,12 +3562,12 @@ const App: React.FC = () => {
     const activeShift = activeShiftId ? shifts.find(s => s.id === activeShiftId) : null;
     const lastBreak = activeShift?.breaks?.[activeShift.breaks.length - 1];
     
-    const minBreakDuration = lastBreak ? lastBreak.duration * 60 : (lastBreak?.isMeal ? MEAL_MIN_DURATION : BREAK_MIN_DURATION);
+    const minBreakDuration = lastBreak ? lastBreak.duration * 60 : BREAK_MIN_DURATION;
     const elapsedBreakSeconds = status === ServiceStatus.BREAK && breakStartDateTime 
       ? Math.floor((currentTime.getTime() - breakStartDateTime.getTime()) / 1000) 
       : 0;
 
-    const isBreakFinished = status === ServiceStatus.BREAK && elapsedBreakSeconds >= MAX_BREAK_DURATION;
+    const isBreakFinished = status === ServiceStatus.BREAK && !!breakEndTimeActual && currentTime.getTime() >= breakEndTimeActual.getTime();
     const canResume = status === ServiceStatus.BREAK;
     
     let breakBackgroundImage = 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&q=80&w=800'; 
@@ -3456,8 +3729,8 @@ const App: React.FC = () => {
                       ? 'Mission Active' 
                       : breakLabel}
                 </p>
-                <div className="flex items-center gap-2">
-                  <div className={`w-2.5 h-2.5 rounded-full ${
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                     status === ServiceStatus.WORKING 
                       ? 'bg-emerald-400 animate-pulse' 
                       : status === ServiceStatus.BREAK 
@@ -3470,7 +3743,7 @@ const App: React.FC = () => {
                                 ? 'bg-emerald-300' 
                                 : 'bg-slate-500')
                   }`} />
-                  <h2 className="text-2xl font-black tracking-tight font-sans">
+                  <h2 className="text-base sm:text-lg font-black tracking-tight font-sans whitespace-nowrap">
                     {status === ServiceStatus.OFF 
                       ? (nextAutoStart && scheduledShiftId 
                           ? getShiftStatus(timeRemainingInMinutes, isResting) 
@@ -3504,13 +3777,13 @@ const App: React.FC = () => {
             </div>
             <div className="py-6 w-full text-center px-6">
               <div className="animate-fadeIn w-full flex flex-col items-center justify-center">
-                 <p className="text-[10px] font-black uppercase opacity-40 tracking-widest mb-2">
+                 <p className="text-[10px] font-black uppercase opacity-75 tracking-widest mb-2">
                    {status === ServiceStatus.BREAK 
                      ? (breakStartDateTime && currentTime < breakStartDateTime 
-                        ? 'Début dans' 
-                        : (elapsedBreakSeconds >= MAX_BREAK_DURATION 
-                           ? 'ALERTE' 
-                           : (elapsedBreakSeconds < minBreakDuration ? 'Avant la reprise' : 'Avant Maximum'))) 
+                        ? 'Début de pause dans' 
+                        : (isBreakFinished 
+                           ? 'PAUSE TERMINÉE' 
+                           : `Temps restant (${lastBreak?.isMeal ? 'Pause Repas' : 'Pause Café'})`)) 
                      : (status === ServiceStatus.OFF 
                         ? (nextAutoStart && scheduledShiftId ? 'Prise de poste dans' : (isTodayFinished ? 'Total Travaillé' : 'Heure actuelle'))
                         : 'Compteur journalier')}
@@ -3525,33 +3798,26 @@ const App: React.FC = () => {
                      textAlign: 'center'
                    }}
                  >
-                   {isTodayCP || isTodayFerieChome ? "07:00" : status === ServiceStatus.BREAK ? renderBreakTimer() : false ? (() => {
-                     if (breakStartDateTime && currentTime < breakStartDateTime) {
-                       const diff = breakStartDateTime.getTime() - currentTime.getTime();
-                       const m = Math.floor(diff / 60000);
-                       const s = Math.floor((diff % 60000) / 1000);
-                       return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                     }
-                     if (!breakStartDateTime) return "00:00";
-                     
-                     if (elapsedBreakSeconds >= MAX_BREAK_DURATION) {
-                       return "DURÉE MAX ATTEINTE";
-                     }
-
-                     const timeLeft = elapsedBreakSeconds < minBreakDuration 
-                       ? minBreakDuration - elapsedBreakSeconds 
-                       : MAX_BREAK_DURATION - elapsedBreakSeconds;
-                       
-                     const m = Math.floor(timeLeft / 60);
-                     const s = timeLeft % 60;
-                     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                   })() : status === ServiceStatus.OFF ? (nextAutoStart && scheduledShiftId ? nextCountdown : (isTodayFinished ? (() => {
+                   {isTodayCP || isTodayFerieChome ? "07:00" : status === ServiceStatus.BREAK ? renderBreakTimer() : status === ServiceStatus.OFF ? (nextAutoStart && scheduledShiftId ? nextCountdown : (isTodayFinished ? (() => {
                      const finalDur = finalDailyMinutes;
                      const h = Math.floor(finalDur / 60);
                      const m = finalDur % 60;
                      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
                    })() : currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))) : getDuration()}
                  </h1>
+                 {status === ServiceStatus.BREAK && (
+                   <p className="text-[11px] font-bold text-amber-200 mt-2 uppercase tracking-wide text-center">
+                     {isBreakFinished ? (
+                       <span className="text-rose-400 font-extrabold animate-pulse">
+                         🔔 Pause de {lastBreak?.duration || breakDuration} min terminée • Prêt pour la reprise
+                       </span>
+                     ) : (
+                       <span>
+                         Fin prévue à {breakEndTimeActual ? breakEndTimeActual.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '--:--'}
+                       </span>
+                     )}
+                   </p>
+                 )}
                  {status === ServiceStatus.OFF && isTodayCP && (
                    <p className="text-sm font-bold text-violet-200 mt-2 uppercase tracking-wide animate-fadeIn text-center">
                      7h00 (Congé Payé)
@@ -3572,19 +3838,21 @@ const App: React.FC = () => {
                 </div>
               )}
               {status === ServiceStatus.BREAK && (
-                <div className="flex gap-3 animate-slideUp">
-                  <button onClick={handleModifyBreak} className="flex-1 py-5 rounded-[24px] bg-white/10 backdrop-blur-md border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all">MODIFIER</button>
-                  <button 
-                    onClick={handleResume} 
-                    disabled={!canResume}
-                    className={`flex-[2] py-5 rounded-[24px] font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl ${
-                      canResume 
-                        ? 'bg-white text-amber-600' 
-                        : 'bg-white/20 text-white/40 cursor-not-allowed'
-                    }`}
-                  >
-                    <Zap size={18} fill="currentColor" /> Reprendre
-                  </button>
+                <div className="flex flex-col gap-2 animate-slideUp">
+                  <div className="flex gap-3">
+                    <button onClick={handleModifyBreak} className="flex-1 py-5 rounded-[24px] bg-white/10 backdrop-blur-md border border-white/20 text-white font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 active:scale-95 transition-all">MODIFIER</button>
+                    <button 
+                      onClick={() => handleResume()} 
+                      disabled={!canResume}
+                      className={`flex-[2] py-5 rounded-[24px] font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl ${
+                        isBreakFinished 
+                          ? 'bg-emerald-500 text-white ring-4 ring-emerald-400/50 shadow-emerald-500/40 animate-pulse' 
+                          : 'bg-white text-amber-600 hover:bg-amber-50'
+                      }`}
+                    >
+                      <Zap size={18} fill="currentColor" /> {isBreakFinished ? 'Reprendre la mission' : 'Reprendre'}
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -3687,7 +3955,13 @@ const App: React.FC = () => {
                 ) : (
                   <div className="flex items-center justify-between animate-fadeIn px-2 w-full relative">
                      <div className="flex items-center gap-3">
-                        <div className={`w-14 h-14 rounded-2xl ${effectiveDarkMode ? `bg-${periodStats.color}-500/10` : `bg-${periodStats.color}-50`} flex items-center justify-center text-${periodStats.color}-500 shadow-inner shrink-0`}>
+                        <div className={`w-14 h-14 rounded-2xl ${
+                          periodStats.color === 'emerald'
+                            ? (effectiveDarkMode ? 'bg-emerald-500/10 text-emerald-500' : 'bg-emerald-50 text-emerald-500')
+                            : periodStats.color === 'amber'
+                              ? (effectiveDarkMode ? 'bg-amber-500/10 text-amber-500' : 'bg-amber-50 text-amber-500')
+                              : (effectiveDarkMode ? 'bg-indigo-500/10 text-indigo-500' : 'bg-indigo-50 text-indigo-500')
+                        } flex items-center justify-center shadow-inner shrink-0`}>
                            <PeriodIcon size={24} />
                         </div>
                         <div className="text-left">
@@ -3706,7 +3980,9 @@ const App: React.FC = () => {
                            periodStats.progress > 120 ? 'bg-rose-600' :
                            periodStats.progress > 110 ? 'bg-rose-500' :
                            periodStats.progress > 100 ? 'bg-orange-500' :
-                           `bg-${periodStats.color}-500`
+                           periodStats.color === 'emerald' ? 'bg-emerald-500' :
+                           periodStats.color === 'amber' ? 'bg-amber-500' :
+                           'bg-indigo-500'
                          }`} 
                          style={{ width: `${Math.min(100, periodStats.progress)}%` }} 
                       />
@@ -4044,10 +4320,12 @@ const App: React.FC = () => {
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Congés (CP)</span>
                 <div className="flex flex-col items-end">
                   <span className="text-sm font-black text-emerald-500">
-                    23,17 j / 23,17 j
+                    {leaveBalances.cp.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} j
                   </span>
                   {seniorityInfo.extraDaysCP > 0 && (
-                    <span className="text-[8px] font-bold text-amber-500 uppercase tracking-tighter">incl. +{seniorityInfo.extraDaysCP}j ancienneté</span>
+                    <span className="text-[8px] font-bold text-amber-500 uppercase tracking-tighter" title="Attribué uniquement à la date anniversaire du contrat de travail">
+                      incl. +{seniorityInfo.extraDaysCP}j ancienneté (annuel)
+                    </span>
                   )}
                 </div>
               </div>
@@ -4105,9 +4383,28 @@ const App: React.FC = () => {
 
                 <div className="space-y-4">
                   <div className="flex justify-between items-end px-1">
-                    <label className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] block">Durée</label>
-                    <span className="text-[11px] font-black text-indigo-500 uppercase tracking-[0.1em]">{breakDuration} MIN</span>
+                    <label className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] block">Durée sélectionnée</label>
+                    <span className="text-[12px] font-black text-indigo-500 uppercase tracking-[0.1em]">{breakDuration} MIN</span>
                   </div>
+
+                  {/* Boutons de sélection rapide */}
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {(breakType === 'coffee' ? [10, 15, 20, 25, 30] : [20, 30, 45, 60, 90]).map((dur) => (
+                      <button
+                        key={dur}
+                        type="button"
+                        onClick={() => setBreakDuration(dur)}
+                        className={`py-2 rounded-xl text-[10px] font-black uppercase transition-all ${
+                          breakDuration === dur
+                            ? 'bg-indigo-600 text-white shadow-md scale-105'
+                            : (effectiveDarkMode ? 'bg-white/5 text-slate-400 hover:bg-white/10' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')
+                        }`}
+                      >
+                        {dur}m
+                      </button>
+                    ))}
+                  </div>
+
                   <div className="relative pt-2">
                     <input 
                       type="range" 
@@ -4120,9 +4417,38 @@ const App: React.FC = () => {
                     />
                     <div className="flex justify-between mt-2 text-[8px] font-black text-slate-500 uppercase tracking-widest opacity-40">
                       <span>1m</span>
-                      <span>45m</span>
+                      <span>30m</span>
+                      <span>60m</span>
                       <span>90m</span>
                     </div>
+                  </div>
+
+                  {/* Aperçu dynamique de l'heure de fin */}
+                  {(() => {
+                    const hParts = breakStartTime.split(':').map(Number);
+                    if (hParts.length === 2 && !isNaN(hParts[0]) && !isNaN(hParts[1])) {
+                      const projectedEnd = new Date();
+                      projectedEnd.setHours(hParts[0], hParts[1] + breakDuration, 0, 0);
+                      return (
+                        <div className={`p-3 rounded-2xl flex items-center justify-between border ${
+                          effectiveDarkMode ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-300' : 'bg-indigo-50 border-indigo-100 text-indigo-800'
+                        }`}>
+                          <span className="text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5">
+                            ⏱️ Fin de pause prévue :
+                          </span>
+                          <span className="text-sm font-black tracking-tight">
+                            {projectedEnd.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  <div className={`p-2.5 rounded-xl text-[9px] font-semibold text-center leading-relaxed ${
+                    effectiveDarkMode ? 'bg-white/5 text-slate-400' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    🔔 Le décompte continue avec précision même si l'écran ou le téléphone est éteint.
                   </div>
                 </div>
 
@@ -4159,7 +4485,7 @@ const App: React.FC = () => {
                 {breakType === 'meal' && breakLocation === 'Extérieur' && (
                   <div className="space-y-4 p-5 bg-indigo-500/5 dark:bg-white/5 rounded-[28px] border border-indigo-500/10 dark:border-white/10 animate-fadeIn mt-2 text-left">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em]">Recherche Repas GPS + AI</span>
+                      <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em]">Recherche Repas & Restauration</span>
                       <Sparkles size={14} className="text-indigo-400 animate-pulse" />
                     </div>
 
@@ -4235,7 +4561,7 @@ const App: React.FC = () => {
                       <div className="flex flex-col items-center justify-center py-6 px-4 gap-3 bg-indigo-500/5 dark:bg-white/5 border border-indigo-500/10 dark:border-white/10 rounded-2xl animate-pulse">
                         <Loader2 size={24} className="animate-spin text-indigo-500" />
                         <span className="text-[10px] font-black uppercase tracking-[0.1em] text-indigo-500 text-center">
-                          ⏳ Recherche en cours à votre position réelle...
+                          ⏳ Recherche de restaurants en cours...
                         </span>
                       </div>
                     )}
@@ -4252,7 +4578,7 @@ const App: React.FC = () => {
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <label className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest block">
-                            {suggestedRestaurants.some(r => r.isFallback) ? "Suggestions Proximité GPS" : "Suggestions Gemini + AI"} ({suggestedRestaurants.length})
+                            {suggestedRestaurants.some(r => r.isFallback) ? "Suggestions Proximité" : "Suggestions Gemini + AI"} ({suggestedRestaurants.length})
                           </label>
                           {suggestedRestaurants.some(r => r.isFallback) && (
                             <span className="text-[7px] font-black bg-indigo-500/10 dark:bg-white/10 text-indigo-400 border border-indigo-500/20 px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse">
@@ -4300,13 +4626,14 @@ const App: React.FC = () => {
                                 </div>
                               </div>
                               <div className="flex justify-end mt-2 pt-2 border-t border-dashed border-slate-300/40 dark:border-white/5">
-                                <button
-                                  type="button"
-                                  onClick={() => window.open(resto.mapsUri, '_blank')}
+                                <a
+                                  href={resto.mapsUri}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
                                   className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[8px] font-black uppercase tracking-widest rounded-lg shadow-sm transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
                                 >
                                   📍 Y ALLER
-                                </button>
+                                </a>
                               </div>
                             </div>
                           ))}
@@ -4361,6 +4688,19 @@ const App: React.FC = () => {
                   <button
                     onClick={async () => {
                       setShowCancelDayModal(false);
+                      setDailyMinutes(0);
+                      setBreakMinutes(0);
+                      setIsOnBreak(false);
+                      localStorage.removeItem('ambu_service_status');
+                      localStorage.removeItem('ambu_current_shift');
+                      localStorage.removeItem('ambu_daily_minutes');
+                      localStorage.removeItem('ambu_break_minutes');
+                      localStorage.removeItem('ambu_is_on_break');
+                      localStorage.removeItem('ambu_break_start_time');
+                      localStorage.removeItem('ambuflow_status');
+                      localStorage.removeItem('ambuflow_active_shift_id');
+                      localStorage.removeItem('ambuflow_break_start_datetime');
+                      localStorage.removeItem('ambuflow_break_end');
                       await handleAnnulerJournee(true);
                     }}
                     className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-rose-900/20 active:scale-95"
@@ -4542,32 +4882,62 @@ const App: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                    <div 
-                      onClick={() => {
-                        setShowNotificationPanel(true);
-                        setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-                      }}
-                      className={`p-3 rounded-full relative border backdrop-blur-md cursor-pointer group hover:scale-105 active:scale-95 transition-all shadow-sm ${
-                        effectiveDarkMode 
-                          ? 'bg-slate-800/50 border-white/10' 
-                          : 'bg-white/60 border-white/40'
-                      }`}
-                    >
-                      <motion.div
-                        animate={unreadCount > 0 ? {
-                          rotate: [0, -10, 10, -10, 10, 0],
-                        } : {}}
-                        transition={unreadCount > 0 ? {
-                          duration: 0.5,
-                          repeat: Infinity,
-                          repeatDelay: 2
-                        } : {}}
+                    <div className="flex items-center gap-2">
+                      {/* Bouton de bascule manuel du thème (Sombre / Clair) */}
+                      <button
+                        type="button"
+                        onClick={handleToggleTheme}
+                        aria-label={effectiveDarkMode ? "Passer en thème clair" : "Passer en thème sombre"}
+                        title={effectiveDarkMode ? "Activer le thème clair" : "Activer le thème sombre"}
+                        className={`p-3 rounded-full relative border backdrop-blur-md cursor-pointer group hover:scale-105 active:scale-95 transition-all shadow-sm flex items-center justify-center ${
+                          effectiveDarkMode 
+                            ? 'bg-slate-800/50 border-white/10 text-amber-400 hover:bg-slate-800/80 hover:border-amber-400/30' 
+                            : 'bg-white/70 border-slate-200/80 text-indigo-600 hover:bg-white hover:border-indigo-300 shadow-slate-200/50'
+                        }`}
                       >
-                        <Bell size={24} className={unreadCount > 0 ? 'text-indigo-500' : effectiveDarkMode ? 'text-slate-400' : 'text-slate-600'} />
-                      </motion.div>
-                      {unreadCount > 0 && (
-                        <div className="absolute top-2 right-2 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900 shadow-lg" />
-                      )}
+                        <motion.div
+                          key={effectiveDarkMode ? 'dark-icon' : 'light-icon'}
+                          initial={{ scale: 0.6, rotate: -60, opacity: 0 }}
+                          animate={{ scale: 1, rotate: 0, opacity: 1 }}
+                          exit={{ scale: 0.6, rotate: 60, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                        >
+                          {effectiveDarkMode ? (
+                            <Sun size={24} className="text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.5)]" />
+                          ) : (
+                            <Moon size={24} className="text-indigo-600 drop-shadow-[0_0_8px_rgba(79,70,229,0.3)]" />
+                          )}
+                        </motion.div>
+                      </button>
+
+                      {/* Cloche de notifications */}
+                      <div 
+                        onClick={() => {
+                          setShowNotificationPanel(true);
+                          setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                        }}
+                        className={`p-3 rounded-full relative border backdrop-blur-md cursor-pointer group hover:scale-105 active:scale-95 transition-all shadow-sm ${
+                          effectiveDarkMode 
+                            ? 'bg-slate-800/50 border-white/10' 
+                            : 'bg-white/60 border-white/40'
+                        }`}
+                      >
+                        <motion.div
+                          animate={unreadCount > 0 ? {
+                            rotate: [0, -10, 10, -10, 10, 0],
+                          } : {}}
+                          transition={unreadCount > 0 ? {
+                            duration: 0.5,
+                            repeat: Infinity,
+                            repeatDelay: 2
+                          } : {}}
+                        >
+                          <Bell size={24} className={unreadCount > 0 ? 'text-indigo-500' : effectiveDarkMode ? 'text-slate-400' : 'text-slate-600'} />
+                        </motion.div>
+                        {unreadCount > 0 && (
+                          <div className="absolute top-2 right-2 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-white dark:border-slate-900 shadow-lg" />
+                        )}
+                      </div>
                     </div>
                   </div>
                 </header>
@@ -4595,8 +4965,24 @@ const App: React.FC = () => {
             </AnimatePresence>
             <main className={`flex-1 w-full mx-auto flex flex-col border-none shadow-none focus:outline-none ${activeTab === 'home' ? 'max-w-7xl px-4 sm:px-6' : 'max-w-2xl px-4 sm:px-6'}`}>
               {activeTab === 'home' && renderHome()}
-              {activeTab === 'planning' && <PlanningTab darkMode={effectiveDarkMode} status={status} setStatus={setStatus} onAutoStartService={handleAutoStartService} onEndServiceSilently={stopServiceSilently} appCurrentTime={currentTime} shifts={shifts} setShifts={setShifts} weekendDays={weekendDays} setWeekendDays={setWeekendDays} activeShiftId={activeShiftId} setActiveShiftId={setActiveShiftId} availableVehicles={availableVehicles} hourlyRate={effectiveHourlyRate} setActiveTab={setActiveTab} workRegime={workRegime} cpCalculationMode={cpCalculationMode as '25' | '30'} modulationWeeks={modulationWeeks} modulationStartDate={modulationStartDate} contractStartDate={contractStartDate} leaveBalances={leaveBalances} initialCpBalance={initialCpBalance} setInitialCpBalance={setInitialCpBalance} primaryRole={primaryRole} onClearAllShifts={clearAllShifts} onDeleteShift={deleteShift} />}
-              {activeTab === 'paie' && <PaieTab logs={logs} darkMode={effectiveDarkMode} hasTaxiCard={hasTaxiCard} hourlyRate={effectiveHourlyRate} weeklyContractHours={weeklyContractHours} payRateMode={payRateMode} workRegime={workRegime} shifts={shifts} cpCalculationMode={cpCalculationMode as '25' | '30'} periodStats={periodStats} />}
+              {activeTab === 'planning' && <PlanningTab darkMode={effectiveDarkMode} status={status} setStatus={setStatus} onAutoStartService={handleAutoStartService} onEndServiceSilently={stopServiceSilently} appCurrentTime={currentTime} shifts={shifts} setShifts={setShifts} weekendDays={weekendDays} setWeekendDays={setWeekendDays} activeShiftId={activeShiftId} setActiveShiftId={setActiveShiftId} availableVehicles={availableVehicles} hourlyRate={parseFloat(effectiveHourlyRate) || 0} setActiveTab={setActiveTab} workRegime={workRegime} cpCalculationMode={cpCalculationMode as '25' | '30'} modulationWeeks={modulationWeeks} modulationStartDate={modulationStartDate} contractStartDate={contractStartDate} leaveBalances={leaveBalances} initialCpBalance={initialCpBalance} setInitialCpBalance={setInitialCpBalance} primaryRole={primaryRole} userName={userName} companyName={companyName} userEmail={user?.email} monthlyReports={monthlyReports} onReportArchived={handleArchiveReport} onMarkReportSent={handleMarkReportSent} onMarkReportFailed={handleMarkReportFailed} onClearAllShifts={clearAllShifts} onDeleteShift={deleteShift} />}
+              {activeTab === 'paie' && <PaieTab 
+                logs={logs} 
+                darkMode={effectiveDarkMode} 
+                hasTaxiCard={hasTaxiCard} 
+                hourlyRate={hourlyRate}
+                baseHourlyRate={hourlyRate}
+                effectiveHourlyRate={effectiveHourlyRate}
+                seniorityBonusDisplayMode={seniorityBonusDisplayMode}
+                seniorityInfo={seniorityInfo}
+                supplementaryTaskType={supplementaryTaskType}
+                weeklyContractHours={weeklyContractHours} 
+                payRateMode={payRateMode} 
+                workRegime={workRegime} 
+                shifts={shifts} 
+                cpCalculationMode={cpCalculationMode as '25' | '30'} 
+                periodStats={periodStats} 
+              />}
               {activeTab === 'profile' && <ProfileTab 
                 darkMode={effectiveDarkMode} 
                 userName={userName} 
@@ -4615,14 +5001,19 @@ const App: React.FC = () => {
                 hourlyRate={hourlyRate}
                 effectiveHourlyRate={effectiveHourlyRate}
                 seniorityInfo={seniorityInfo}
+                seniorityBonusDisplayMode={seniorityBonusDisplayMode}
+                setSeniorityBonusDisplayMode={(mode) => {
+                  setSeniorityBonusDisplayMode(mode);
+                  localStorage.setItem('ambuflow_seniority_bonus_display_mode', mode);
+                }}
                 setHourlyRate={setHourlyRate}
                 setContractStartDate={setContractStartDate}
                 shifts={shifts} 
                 logs={logs} 
                 followSystemTheme={followSystemTheme} 
-                setFollowSystemTheme={setFollowSystemTheme} 
+                setFollowSystemTheme={handleSetFollowSystemTheme} 
                 themeChoice={themeChoice}
-                setThemeChoice={setThemeChoice}
+                setThemeChoice={handleSetThemeChoice}
                 userStats={userStats} 
                 onDeleteAccount={handleHardDelete}
                 onLogout={async () => {
@@ -4679,6 +5070,7 @@ const App: React.FC = () => {
               isGuest={isGuest} 
               setIsGuest={setIsGuest}
             />
+            <OfflineIndicator />
           </motion.div>
         </AnimatePresence>
 
@@ -4789,6 +5181,25 @@ const App: React.FC = () => {
             </div>
           )}
         </AnimatePresence>
+        {/* MODAL CONFIRMATION ENVOI RAPPORT MENSUEL AUTOMATIQUE */}
+        <GmailSendConfirmModal
+          isOpen={showAutoMonthlyConfirmModal}
+          onClose={() => setShowAutoMonthlyConfirmModal(false)}
+          report={autoMonthlyConfirmReport}
+          defaultRecipient={user?.email || ''}
+          isAutoMonthlyTrigger={true}
+          darkMode={effectiveDarkMode}
+          onPreviewPdf={() => {
+            setShowAutoMonthlyConfirmModal(false);
+            setActiveTab('planning');
+          }}
+          onSentSuccess={(details) => {
+            handleMarkReportSent(details);
+          }}
+          onSentError={(monthKey, errMsg) => {
+            handleMarkReportFailed(monthKey, errMsg);
+          }}
+        />
       </div>
     )}
   </>

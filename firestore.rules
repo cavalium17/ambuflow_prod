@@ -18,13 +18,13 @@ service cloud.firestore {
     }
 
     function isOwner(userId) {
-      return (isSignedIn() && request.auth.uid == userId) || userId == 'local_user';
+      return isSignedIn() && request.auth.uid == userId;
     }
     
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.get('email', '') == "adrien.brunelliere@gmail.com" && 
-        request.auth.token.get('email_verified', false) == true
+        request.auth.token.email == "adrien.brunelliere@gmail.com" && 
+        request.auth.token.email_verified == true
       );
     }
     
@@ -40,23 +40,31 @@ service cloud.firestore {
     // Entity Validators
     // ===============================================================
     function isValidUser(data) {
-      return data.keys().hasAll(['userName']) &&
-        data.userName is string && data.userName.size() <= 100 &&
-        (!('firstName' in data) || (data.firstName is string || data.firstName == null)) &&
-        (!('lastName' in data) || (data.lastName is string || data.lastName == null)) &&
-        (!('email' in data) || (data.email is string || data.email == null)) &&
-        (!('roles' in data) || (data.roles is list || data.roles == null)) &&
-        (!('onboarded' in data) || (data.onboarded is bool || data.onboarded is string || data.onboarded == null)) &&
-        (!('cpCalculationMode' in data) || (data.cpCalculationMode is string || data.cpCalculationMode is number || data.cpCalculationMode == null)) &&
-        (!('overtimeMode' in data) || (data.overtimeMode is string || data.overtimeMode == null)) &&
-        (!('payRateMode' in data) || (data.payRateMode is string || data.payRateMode == null)) &&
-        (!('weeklyContractHours' in data) || (data.weeklyContractHours is string || data.weeklyContractHours is number || data.weeklyContractHours == null)) &&
-        (!('initialCpBalance' in data) || (data.initialCpBalance is string || data.initialCpBalance is number || data.initialCpBalance == null)) &&
-        (!('heureEmbauchePrevue' in data) || (data.heureEmbauchePrevue is string || data.heureEmbauchePrevue == null)) &&
-        (!('soldeTotalCP' in data) || (data.soldeTotalCP is string || data.soldeTotalCP is number || data.soldeTotalCP == null)) &&
-        (!('joursCPPrisCycle' in data) || (data.joursCPPrisCycle is string || data.joursCPPrisCycle is number || data.joursCPPrisCycle == null)) &&
-        (!('hourlyRate' in data) || (data.hourlyRate is string || data.hourlyRate is number || data.hourlyRate == null)) &&
-        (!('status' in data) || (data.status is string || data.status == null));
+      return (!('userName' in data) || data.userName == null || (data.userName is string && data.userName.size() <= 200)) &&
+        (!('firstName' in data) || data.firstName == null || (data.firstName is string && data.firstName.size() <= 100)) &&
+        (!('lastName' in data) || data.lastName == null || (data.lastName is string && data.lastName.size() <= 100)) &&
+        (!('email' in data) || data.email == null || (data.email is string && data.email.size() <= 200)) &&
+        (!('roles' in data) || data.roles == null || data.roles is list) &&
+        (!('onboarded' in data) || data.onboarded == null || data.onboarded is bool || data.onboarded is string) &&
+        (!('cpCalculationMode' in data) || data.cpCalculationMode == null || data.cpCalculationMode is string || data.cpCalculationMode is number) &&
+        (!('overtimeMode' in data) || data.overtimeMode == null || data.overtimeMode is string) &&
+        (!('payRateMode' in data) || data.payRateMode == null || data.payRateMode is string) &&
+        (!('seniorityBonusDisplayMode' in data) || data.seniorityBonusDisplayMode == null || data.seniorityBonusDisplayMode is string) &&
+        (!('supplementaryTaskType' in data) || data.supplementaryTaskType == null || data.supplementaryTaskType is string) &&
+        (!('weeklyContractHours' in data) || data.weeklyContractHours == null || data.weeklyContractHours is string || data.weeklyContractHours is number) &&
+        (!('initialCpBalance' in data) || data.initialCpBalance == null || data.initialCpBalance is string || data.initialCpBalance is number) &&
+        (!('lastCpAccrualDate' in data) || data.lastCpAccrualDate == null || data.lastCpAccrualDate is string) &&
+        (!('lastSeniorityAccrualYear' in data) || data.lastSeniorityAccrualYear == null || data.lastSeniorityAccrualYear is string) &&
+        (!('heureEmbauchePrevue' in data) || data.heureEmbauchePrevue == null || data.heureEmbauchePrevue is string) &&
+        (!('soldeTotalCP' in data) || data.soldeTotalCP == null || data.soldeTotalCP is string || data.soldeTotalCP is number) &&
+        (!('joursCPPrisCycle' in data) || data.joursCPPrisCycle == null || data.joursCPPrisCycle is string || data.joursCPPrisCycle is number) &&
+        (!('hourlyRate' in data) || data.hourlyRate == null || data.hourlyRate is string || data.hourlyRate is number) &&
+        (!('status' in data) || data.status == null || data.status is string) &&
+        (!('shifts' in data) || data.shifts == null || data.shifts is list) &&
+        (!('logs' in data) || data.logs == null || data.logs is list) &&
+        (!('notifications' in data) || data.notifications == null || data.notifications is list) &&
+        (!('lastMonthlyPdfReportMonth' in data) || data.lastMonthlyPdfReportMonth == null || (data.lastMonthlyPdfReportMonth is string && data.lastMonthlyPdfReportMonth.size() <= 20)) &&
+        (!('monthlyReports' in data) || data.monthlyReports == null || (data.monthlyReports is list && data.monthlyReports.size() <= 60));
     }
     
     function isValidShift(data) {
@@ -75,17 +83,16 @@ service cloud.firestore {
     
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) && isValidUser(incoming()) && incoming().get('role', 'user') != 'admin';
-      allow update: if isOwner(userId) && isValidUser(incoming()) && 
-                    (!('role' in incoming().diff(existing()).affectedKeys()) || isAdmin());
+      allow create: if (isOwner(userId) && isValidUser(incoming()) && (!('role' in incoming()) || incoming().role != 'admin')) || isAdmin();
+      allow update: if (isOwner(userId) && isValidUser(incoming()) && (!incoming().diff(existing()).affectedKeys().hasAny(['role']) || isAdmin())) || isAdmin();
       allow delete: if isOwner(userId) || isAdmin();
     }
 
     match /shifts/{shiftId} {
-      allow read: if isOwner(resource.data.userId) || isAdmin();
+      allow read: if (isSignedIn() && resource.data.userId == request.auth.uid) || isAdmin();
       allow create: if isSignedIn() && isValidShift(incoming());
-      allow update: if isSignedIn() && isOwner(existing().userId) && isValidShift(incoming()) && incoming().userId == existing().userId;
-      allow delete: if isSignedIn() && isOwner(existing().userId);
+      allow update: if isSignedIn() && existing().userId == request.auth.uid && isValidShift(incoming()) && incoming().userId == existing().userId;
+      allow delete: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
     }
     
     // Internal probe support

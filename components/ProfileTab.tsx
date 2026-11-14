@@ -35,9 +35,11 @@ import {
   Loader2,
   Layers,
   Calendar as CalendarIcon,
-  Smartphone
+  Smartphone,
+  Receipt
 } from 'lucide-react';
 import { Shift, ActivityLog, UserStats, UserRole } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
 import { storage, auth } from '../src/firebaseConfig';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
@@ -58,7 +60,9 @@ interface ProfileTabProps {
   setCompanyCity?: (val: string) => void;
   hourlyRate: string;
   effectiveHourlyRate?: string;
-  seniorityInfo?: { years: number; months: number; bonus: number; text: string };
+  seniorityInfo?: { years: number; months: number; bonus: number; text: string; extraDaysCP?: number; nextAnniversaryText?: string; detailedText?: string };
+  seniorityBonusDisplayMode?: 'separate_line' | 'integrated_rate';
+  setSeniorityBonusDisplayMode?: (val: 'separate_line' | 'integrated_rate') => void;
   setHourlyRate?: (val: string) => void;
   setContractStartDate?: (val: string) => void;
   shifts: Shift[];
@@ -94,8 +98,8 @@ interface ProfileTabProps {
   setPayRateMode: (val: '100_percent' | '90_percent') => void;
   pushEnabled: boolean;
   setPushEnabled: (val: boolean) => void;
-  autoGeo: boolean;
-  setAutoGeo: (val: boolean) => void;
+  autoGeo?: boolean;
+  setAutoGeo?: (val: boolean) => void;
   roles: UserRole[];
   setRoles: (val: UserRole[]) => void;
   primaryRole: UserRole | '';
@@ -128,6 +132,8 @@ export default function ProfileTab({
   hourlyRate,
   effectiveHourlyRate,
   seniorityInfo,
+  seniorityBonusDisplayMode = 'separate_line',
+  setSeniorityBonusDisplayMode,
   setHourlyRate,
   setContractStartDate,
   followSystemTheme,
@@ -870,8 +876,11 @@ export default function ProfileTab({
                 <div className="flex justify-between items-center">
                   <div className="flex flex-col">
                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Majoration Ancienneté</span>
-                    <span className="text-[8px] font-bold text-indigo-500/60 uppercase tracking-widest mt-0.5">
-                      {seniorityText} • Taux appliqué: +{(seniorityInfo.bonus * 100).toFixed(0)}%
+                    <span className="text-[8px] font-bold text-indigo-500/80 uppercase tracking-widest mt-0.5">
+                      {seniorityInfo.years} an{seniorityInfo.years > 1 ? 's' : ''} d'ancienneté • Taux appliqué : +{(seniorityInfo.bonus * 100).toFixed(0)}%
+                    </span>
+                    <span className="text-[7px] text-slate-400 font-medium mt-0.5">
+                      Incrémenté uniquement à la date anniversaire du contrat {seniorityInfo.nextAnniversaryText ? `(prochaine le ${seniorityInfo.nextAnniversaryText})` : ''}
                     </span>
                   </div>
                   <span className="text-sm font-black text-indigo-400">
@@ -881,6 +890,115 @@ export default function ProfileTab({
               </div>
             ) : null}
 
+            {/* Mode d'affichage de la prime d'ancienneté */}
+            <div className={`flex flex-col gap-3 p-5 rounded-[28px] border backdrop-blur-md shadow-sm ${
+              darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-white/50'
+            }`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-xl ${darkMode ? 'bg-indigo-500/10' : 'bg-indigo-50'}`}>
+                    <Receipt size={16} className="text-indigo-500" />
+                  </div>
+                  <div>
+                    <span className={`text-[10px] font-black uppercase tracking-widest block ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                      Mode d'affichage de la prime d'ancienneté
+                    </span>
+                    <span className="text-[9px] text-slate-400 block font-medium">
+                      Conforme à votre bulletin de paie
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Options Radio / Buttons */}
+              <div className="flex flex-col gap-2.5">
+                {/* Option A : Ligne séparée */}
+                <button
+                  type="button"
+                  onClick={() => setSeniorityBonusDisplayMode?.('separate_line')}
+                  className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-1.5 ${
+                    seniorityBonusDisplayMode === 'separate_line'
+                      ? (darkMode ? 'bg-indigo-600/15 border-indigo-500 shadow-md ring-1 ring-indigo-500/30' : 'bg-indigo-50/70 border-indigo-500 shadow-md ring-1 ring-indigo-500/30')
+                      : (darkMode ? 'bg-slate-950/40 border-white/5 hover:border-white/15' : 'bg-white border-slate-100 hover:border-slate-200 shadow-sm')
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                        seniorityBonusDisplayMode === 'separate_line' ? 'border-indigo-600 bg-indigo-600' : 'border-slate-400'
+                      }`}>
+                        {seniorityBonusDisplayMode === 'separate_line' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                      </div>
+                      <span className={`text-xs font-black uppercase tracking-wider ${
+                        seniorityBonusDisplayMode === 'separate_line' ? 'text-indigo-500 dark:text-indigo-400' : (darkMode ? 'text-slate-200' : 'text-slate-700')
+                      }`}>
+                        Ligne séparée (Type Bulletin de paie)
+                      </span>
+                    </div>
+                    <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 shrink-0">
+                      Par défaut
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 pl-6.5 leading-relaxed font-medium">
+                    Le taux horaire reste le taux de base. La prime d'ancienneté est calculée et affichée sur une ligne distincte dans le récapitulatif.
+                  </p>
+                </button>
+
+                {/* Option B : Taux horaire majoré */}
+                <button
+                  type="button"
+                  onClick={() => setSeniorityBonusDisplayMode?.('integrated_rate')}
+                  className={`p-4 rounded-2xl text-left border transition-all flex flex-col gap-1.5 ${
+                    seniorityBonusDisplayMode === 'integrated_rate'
+                      ? (darkMode ? 'bg-indigo-600/15 border-indigo-500 shadow-md ring-1 ring-indigo-500/30' : 'bg-indigo-50/70 border-indigo-500 shadow-md ring-1 ring-indigo-500/30')
+                      : (darkMode ? 'bg-slate-950/40 border-white/5 hover:border-white/15' : 'bg-white border-slate-100 hover:border-slate-200 shadow-sm')
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                        seniorityBonusDisplayMode === 'integrated_rate' ? 'border-indigo-600 bg-indigo-600' : 'border-slate-400'
+                      }`}>
+                        {seniorityBonusDisplayMode === 'integrated_rate' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                      </div>
+                      <span className={`text-xs font-black uppercase tracking-wider ${
+                        seniorityBonusDisplayMode === 'integrated_rate' ? 'text-indigo-500 dark:text-indigo-400' : (darkMode ? 'text-slate-200' : 'text-slate-700')
+                      }`}>
+                        Taux horaire majoré
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400 pl-6.5 leading-relaxed font-medium">
+                    La prime d'ancienneté est directement intégrée dans le taux horaire de base (ex: {(parseFloat(hourlyRate || '13.31')).toFixed(2)} € + {((seniorityInfo?.bonus || 0.02) * 100).toFixed(0)}% = {(parseFloat(hourlyRate || '13.31') * (1 + (seniorityInfo?.bonus || 0.02))).toFixed(2)} €/h).
+                  </p>
+                </button>
+              </div>
+
+              {/* Simulation dynamique de calcul */}
+              <div className={`mt-1 p-3.5 rounded-2xl border ${
+                darkMode ? 'bg-indigo-950/30 border-indigo-500/20' : 'bg-indigo-50/50 border-indigo-100'
+              }`}>
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="font-bold text-slate-400 uppercase tracking-widest">
+                    {seniorityBonusDisplayMode === 'separate_line' ? 'Taux horaire appliqué (Base)' : 'Taux horaire appliqué (Majoré)'}
+                  </span>
+                  <span className="font-black text-indigo-500 text-xs">
+                    {seniorityBonusDisplayMode === 'separate_line'
+                      ? (parseFloat(hourlyRate || '0') * (1 + (supplementaryTaskType === 'type_1' ? 0.02 : supplementaryTaskType === 'type_2' ? 0.05 : supplementaryTaskType === 'type_3' ? 0.10 : 0))).toFixed(2)
+                      : effectiveHourlyRate} €/h
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] mt-1.5 pt-1.5 border-t border-indigo-500/10">
+                  <span className="font-medium text-slate-400">
+                    Prime d'ancienneté (+{((seniorityInfo?.bonus || 0) * 100).toFixed(0)}%)
+                  </span>
+                  <span className={`font-black text-[10px] ${seniorityBonusDisplayMode === 'separate_line' ? 'text-emerald-500' : 'text-slate-400'}`}>
+                    {seniorityBonusDisplayMode === 'separate_line' ? 'Ligne dédiée distincte' : 'Incluse dans le taux (0,00 €)'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Taux Horaire Final Récapitulatif - Toujours visible si majorations actives */}
             {( (seniorityInfo?.bonus && seniorityInfo.bonus > 0) || (supplementaryTaskType !== 'none') ) && (
               <div className={`p-5 rounded-3xl border-2 shadow-lg backdrop-blur-md ${
@@ -888,14 +1006,20 @@ export default function ProfileTab({
               }`}>
                 <div className="flex justify-between items-center">
                   <div className="flex flex-col">
-                    <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1">Taux Horaire Final</span>
-                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest leading-tight max-w-[180px]">
-                      Cumul : base + {( ((seniorityInfo?.bonus || 0) + (supplementaryTaskType === 'type_1' ? 0.02 : supplementaryTaskType === 'type_2' ? 0.05 : supplementaryTaskType === 'type_3' ? 0.10 : 0)) * 100).toFixed(0)}% de majorations
+                    <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1">
+                      {seniorityBonusDisplayMode === 'separate_line' ? 'Taux de base appliqué' : 'Taux horaire majoré'}
+                    </span>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest leading-tight max-w-[200px]">
+                      {seniorityBonusDisplayMode === 'separate_line'
+                        ? `Prime d'ancienneté (+${((seniorityInfo?.bonus || 0) * 100).toFixed(0)}%) calculée sur ligne séparée`
+                        : `Cumul : base + ${(((seniorityInfo?.bonus || 0) + (supplementaryTaskType === 'type_1' ? 0.02 : supplementaryTaskType === 'type_2' ? 0.05 : supplementaryTaskType === 'type_3' ? 0.10 : 0)) * 100).toFixed(0)}% de majorations`}
                     </span>
                   </div>
                   <div className="flex items-baseline gap-1">
                     <span className="text-xl font-black text-indigo-500">
-                      {effectiveHourlyRate}
+                      {seniorityBonusDisplayMode === 'separate_line'
+                        ? (parseFloat(hourlyRate || '0') * (1 + (supplementaryTaskType === 'type_1' ? 0.02 : supplementaryTaskType === 'type_2' ? 0.05 : supplementaryTaskType === 'type_3' ? 0.10 : 0))).toFixed(2)
+                        : effectiveHourlyRate}
                     </span>
                     <span className="text-[10px] font-black text-indigo-500 opacity-60">€/h</span>
                   </div>
@@ -904,6 +1028,25 @@ export default function ProfileTab({
             )}
           </div>
         </div>
+      </div>
+
+      {/* SECTION APPLICATION HORS-LIGNE & AUTONOME */}
+      <div className={`${bentoCardBase} p-8 space-y-4`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400">
+              <ShieldCheck size={18} />
+            </div>
+            <div>
+              <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Mode 100% Hors-Ligne & Veille</h3>
+              <p className="text-[10px] text-slate-400 font-medium">Fonctionne téléphone éteint et sans réseau</p>
+            </div>
+          </div>
+        </div>
+        <p className="text-xs text-slate-300 leading-relaxed">
+          AmbuFlow utilise des horodatages réels basés sur l'horloge interne de votre appareil. Vos pointages, amplitudes et pauses continuent avec exactitude même si votre téléphone est éteint, déchargé ou redémarré.
+        </p>
+        <PWAInstallButton variant="full" />
       </div>
 
       {/* SECTION PARAMÈTRES */}
@@ -916,42 +1059,62 @@ export default function ProfileTab({
                 <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-500">
                   <Smartphone size={18} />
                 </div>
-                <span className="text-sm font-bold">Thème automatique</span>
+                <div>
+                  <span className="text-sm font-bold block">Thème automatique</span>
+                  <span className="text-[10px] text-slate-400 block font-medium">Suit les préférences du système</span>
+                </div>
               </div>
               <button 
                 onClick={() => setFollowSystemTheme(!followSystemTheme)} 
                 className={`w-12 h-6 rounded-full relative transition-all ${followSystemTheme ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                aria-label="Basculer le thème automatique"
               >
                 <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${followSystemTheme ? 'left-7' : 'left-1'}`} />
               </button>
             </div>
 
-          {!followSystemTheme && (
-            <div className={`flex p-1.5 rounded-2xl gap-1 animate-fadeIn border ${
-              darkMode ? 'bg-slate-800 border-white/5' : 'bg-white/80 border-white/50 shadow-inner'
-            }`}>
-              <button 
-                onClick={() => setThemeChoice('light')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                  themeChoice === 'light' 
-                    ? (darkMode ? 'bg-indigo-600 text-white' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-200') 
-                    : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-400 hover:text-slate-600')
-                }`}
-              >
-                <Sun size={14} /> Clair
-              </button>
-              <button 
-                onClick={() => setThemeChoice('dark')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                  themeChoice === 'dark' 
-                    ? (darkMode ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm') 
-                    : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-400 hover:text-slate-600')
-                }`}
-              >
-                <Moon size={14} /> Sombre
-              </button>
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Sun size={13} className="text-amber-500" /> Bascule manuelle (Clair / Sombre)
+                </span>
+                {!followSystemTheme && (
+                  <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                    Mode manuel
+                  </span>
+                )}
+              </div>
+              <div className={`flex p-1.5 rounded-2xl gap-1 border ${
+                darkMode ? 'bg-slate-800 border-white/5' : 'bg-white/80 border-white/50 shadow-inner'
+              }`}>
+                <button 
+                  onClick={() => {
+                    setFollowSystemTheme(false);
+                    setThemeChoice('light');
+                  }}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    (!followSystemTheme && themeChoice === 'light') || (followSystemTheme && !darkMode)
+                      ? (darkMode ? 'bg-indigo-600 text-white shadow-lg' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-200') 
+                      : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-400 hover:text-slate-600')
+                  }`}
+                >
+                  <Sun size={14} className={(!followSystemTheme && themeChoice === 'light') || (followSystemTheme && !darkMode) ? 'text-amber-300' : ''} /> Clair
+                </button>
+                <button 
+                  onClick={() => {
+                    setFollowSystemTheme(false);
+                    setThemeChoice('dark');
+                  }}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    (!followSystemTheme && themeChoice === 'dark') || (followSystemTheme && darkMode)
+                      ? (darkMode ? 'bg-indigo-600 text-white shadow-lg' : 'bg-white text-indigo-600 shadow-sm') 
+                      : (darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-400 hover:text-slate-600')
+                  }`}
+                >
+                  <Moon size={14} className={(!followSystemTheme && themeChoice === 'dark') || (followSystemTheme && darkMode) ? 'text-indigo-300' : ''} /> Sombre
+                </button>
+              </div>
             </div>
-          )}
           </div>
 
           <div className="flex items-center justify-between">
@@ -966,21 +1129,6 @@ export default function ProfileTab({
               className={`w-12 h-6 rounded-full relative transition-all ${pushEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
             >
               <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${pushEnabled ? 'left-7' : 'left-1'}`} />
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-violet-500/10 text-violet-500">
-                <MapPin size={18} />
-              </div>
-              <span className="text-sm font-bold">Géolocalisation Auto</span>
-            </div>
-            <button 
-              onClick={() => setAutoGeo(!autoGeo)} 
-              className={`w-12 h-6 rounded-full relative transition-all ${autoGeo ? 'bg-indigo-600' : 'bg-slate-700'}`}
-            >
-              <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${autoGeo ? 'left-7' : 'left-1'}`} />
             </button>
           </div>
 

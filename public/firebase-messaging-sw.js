@@ -16,9 +16,13 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
-// Gestionnaire de messages pour la planification locale (existant)
+// Gestionnaire de messages pour la planification locale
+let breakNotificationTimer = null;
+
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SCHEDULE_NOTIFICATION') {
+  if (!event.data) return;
+
+  if (event.data.type === 'SCHEDULE_NOTIFICATION') {
     const { title, body, delay, urgency, icon } = event.data;
     
     setTimeout(() => {
@@ -34,6 +38,31 @@ self.addEventListener('message', (event) => {
       };
       self.registration.showNotification(title, options);
     }, delay);
+  } else if (event.data.type === 'SCHEDULE_BREAK_NOTIFICATION') {
+    const { title, body, endTime, delay } = event.data;
+    if (breakNotificationTimer) {
+      clearTimeout(breakNotificationTimer);
+      breakNotificationTimer = null;
+    }
+    const msToWait = Math.max(0, endTime ? (endTime - Date.now()) : (delay || 0));
+    breakNotificationTimer = setTimeout(() => {
+      self.registration.showNotification(title || 'Fin de pause 🚑', {
+        body: body || 'Votre pause est terminée. Prêt pour la reprise !',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [400, 200, 400, 200, 600],
+        tag: 'break-timer-end',
+        renotify: true,
+        requireInteraction: true,
+        data: { url: '/', type: 'BREAK_END' }
+      });
+      breakNotificationTimer = null;
+    }, msToWait);
+  } else if (event.data.type === 'CANCEL_BREAK_NOTIFICATION') {
+    if (breakNotificationTimer) {
+      clearTimeout(breakNotificationTimer);
+      breakNotificationTimer = null;
+    }
   }
 });
 

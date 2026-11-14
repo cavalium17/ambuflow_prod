@@ -52,7 +52,20 @@ const formatWeekTitle = (startDate: Date) => {
   return `Semaine du ${String(startDay).padStart(2, '0')} ${startMonth} au ${String(endDay).padStart(2, '0')} ${endMonth}`;
 };
 
-const MonthAccordion = ({ month, displayMode, darkMode, cardClass, isDefaultOpen }: any) => {
+const MonthAccordion = ({ 
+  month, 
+  displayMode, 
+  darkMode, 
+  cardClass, 
+  isDefaultOpen,
+  seniorityBonusDisplayMode,
+  seniorityRate,
+  displayedHourlyRate,
+  hasTaxiCard,
+  SMPG_BASE,
+  TAXI_BONUS_PERCENT,
+  NET_COEFFICIENT
+}: any) => {
   const [isOpen, setIsOpen] = useState(isDefaultOpen);
   
   const currentMonthTotal = displayMode === 'net' ? month.totalNet : month.totalBrut;
@@ -60,6 +73,7 @@ const MonthAccordion = ({ month, displayMode, darkMode, cardClass, isDefaultOpen
   
   const diff = currentMonthTotal - previousMonthTotal;
   const monthName = month.startDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  const isSeparateLine = seniorityBonusDisplayMode === 'separate_line';
   
   return (
     <div className={`rounded-[32px] border overflow-hidden transition-all duration-300 mb-4 backdrop-blur-xl ${
@@ -108,13 +122,94 @@ const MonthAccordion = ({ month, displayMode, darkMode, cardClass, isDefaultOpen
             transition={{ duration: 0.3 }}
           >
             <div className="p-4 space-y-4">
+              {/* Structure Bulletin de Paie (Conforme au mode d'affichage choisi) */}
+              <div className={`p-4 rounded-2xl border ${
+                darkMode ? 'bg-indigo-950/20 border-indigo-500/20' : 'bg-indigo-50/60 border-indigo-100 shadow-sm'
+              }`}>
+                <div className="flex items-center justify-between pb-2 mb-2 border-b border-indigo-500/10">
+                  <div className="flex items-center gap-2">
+                    <Receipt size={14} className="text-indigo-500" />
+                    <span className="text-[10px] font-black uppercase tracking-wider text-indigo-400">
+                      Structure du bulletin de paie ({monthName})
+                    </span>
+                  </div>
+                  <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                    isSeparateLine 
+                      ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' 
+                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                  }`}>
+                    {isSeparateLine ? 'Ligne séparée' : 'Taux majoré'}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-xs">
+                  {/* Ligne Salaire de Base */}
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span className="text-[11px] font-medium">
+                      Salaire de base ({Math.floor(month.totalEffectiveMin / 60)}h{String(month.totalEffectiveMin % 60).padStart(2, '0')} @ {displayedHourlyRate.toFixed(2)} €/h) :
+                    </span>
+                    <span className={`font-bold tabular-nums ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                      {(displayMode === 'net' ? (month.totalBaseWages || 0) * NET_COEFFICIENT : (month.totalBaseWages || 0)).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+                    </span>
+                  </div>
+
+                  {/* Ligne Prime d'ancienneté */}
+                  {isSeparateLine ? (
+                    <div className="flex justify-between items-center text-emerald-400">
+                      <span className="text-[11px] font-medium flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        Prime d'ancienneté (+{(seniorityRate * 100).toFixed(0)}%) :
+                      </span>
+                      <span className="font-black text-emerald-400 tabular-nums">
+                        +{(displayMode === 'net' ? (month.totalSeniorityBonus || 0) * NET_COEFFICIENT : (month.totalSeniorityBonus || 0)).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center text-slate-400 opacity-60">
+                      <span className="text-[11px] font-medium">Prime d'ancienneté :</span>
+                      <span className="font-bold italic">0,00 € (incluse dans le taux)</span>
+                    </div>
+                  )}
+
+                  {/* Ligne Majoration Nuit si applicable */}
+                  {month.totalNightBonus > 0 && (
+                    <div className="flex justify-between items-center text-indigo-400">
+                      <span className="text-[11px] font-medium">Majoration Nuit (+10%) :</span>
+                      <span className="font-bold tabular-nums">
+                        +{(displayMode === 'net' ? (month.totalNightBonus || 0) * NET_COEFFICIENT : (month.totalNightBonus || 0)).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Ligne Indemnités */}
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span className="text-[11px] font-medium">Indemnités repas / transport :</span>
+                    <span className="font-bold text-emerald-400 tabular-nums">
+                      +{month.totalAllowances.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+                    </span>
+                  </div>
+
+                  {/* Ligne Taxi si applicable */}
+                  {hasTaxiCard && (
+                    <div className="flex justify-between items-center text-amber-400">
+                      <span className="text-[11px] font-medium">Prime Taxi (5% SMPG) :</span>
+                      <span className="font-bold tabular-nums">
+                        +{(displayMode === 'net' ? (SMPG_BASE * TAXI_BONUS_PERCENT * NET_COEFFICIENT) : (SMPG_BASE * TAXI_BONUS_PERCENT)).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {month.weeks.map((week: any) => (
                 <WeekAccordion 
                   key={week.weekKey} 
                   week={week} 
                   displayMode={displayMode} 
                   darkMode={darkMode} 
-                  cardClass={cardClass} 
+                  cardClass={cardClass}
+                  seniorityBonusDisplayMode={seniorityBonusDisplayMode}
+                  displayedHourlyRate={displayedHourlyRate}
                 />
               ))}
             </div>
@@ -125,11 +220,12 @@ const MonthAccordion = ({ month, displayMode, darkMode, cardClass, isDefaultOpen
   );
 };
 
-const WeekAccordion = ({ week, displayMode, darkMode, cardClass }: any) => {
+const WeekAccordion = ({ week, displayMode, darkMode, cardClass, seniorityBonusDisplayMode, displayedHourlyRate }: any) => {
   const [isOpen, setIsOpen] = useState(false);
   const totalEarnings = displayMode === 'net' ? week.totalNet : week.totalBrut;
   const hours = Math.floor(week.totalEffectiveMin / 60);
   const minutes = week.totalEffectiveMin % 60;
+  const isSeparateLine = seniorityBonusDisplayMode === 'separate_line';
 
   return (
     <div className={`rounded-[32px] border overflow-hidden transition-all duration-300 ${
@@ -194,11 +290,11 @@ const WeekAccordion = ({ week, displayMode, darkMode, cardClass }: any) => {
                   <div className="flex justify-between items-start">
                     <div className="flex items-center gap-3">
                       <div className={`p-2.5 rounded-xl bg-slate-500/5 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
-                        {shift.vehicle.includes('ASSU') ? <Stethoscope size={16} /> : shift.vehicle.includes('VSL') ? <Briefcase size={16} /> : <Car size={16} />}
+                        {shift.vehicle?.includes('ASSU') ? <Stethoscope size={16} /> : shift.vehicle?.includes('VSL') ? <Briefcase size={16} /> : <Car size={16} />}
                       </div>
                       <div>
                         <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-0.5">
-                          {new Date(shift.day).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
+                          {parseLocalDate(shift.day).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </p>
                         <p className="text-sm font-black tracking-tight">{shift.start} — {shift.end}</p>
                       </div>
@@ -246,6 +342,11 @@ interface PaieTabProps {
   darkMode?: boolean;
   hasTaxiCard?: boolean;
   hourlyRate: string;
+  baseHourlyRate?: string;
+  effectiveHourlyRate?: string;
+  seniorityBonusDisplayMode?: 'separate_line' | 'integrated_rate';
+  seniorityInfo?: { years: number; months: number; bonus: number; text: string; extraDaysCP?: number; nextAnniversaryText?: string; detailedText?: string };
+  supplementaryTaskType?: 'none' | 'type_1' | 'type_2' | 'type_3';
   weeklyContractHours: number;
   overtimeMode?: 'weekly' | 'biweekly' | 'modulation' | 'annualized';
   payRateMode: '100_percent' | '90_percent';
@@ -259,6 +360,11 @@ const PaieTab: React.FC<PaieTabProps> = ({
   darkMode = false, 
   hasTaxiCard = false, 
   hourlyRate, 
+  baseHourlyRate,
+  effectiveHourlyRate,
+  seniorityBonusDisplayMode = 'separate_line',
+  seniorityInfo,
+  supplementaryTaskType = 'none',
   weeklyContractHours,
   overtimeMode,
   payRateMode,
@@ -268,52 +374,6 @@ const PaieTab: React.FC<PaieTabProps> = ({
   periodStats
 }) => {
   const [displayMode, setDisplayMode] = useState<'net' | 'brut'>('net');
-
-  const handleExportCSV = () => {
-    const currentMonth = monthlyStats.months.find((m: any) => m.isCurrentMonth) || monthlyStats.months[0];
-    if (!currentMonth) return;
-
-    const monthName = currentMonth.startDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
-    
-    // BOM for Excel to recognize UTF-8
-    let csvContent = "\uFEFF";
-    // Header
-    csvContent += "Date;Véhicule;Début;Fin;Type;Heures Effectives;Gain Brut;Gain Net;Indemnités;Détail Indemnités\n";
-
-    // Shifts - flattened from weeks
-    const allShifts = currentMonth.weeks.flatMap((w: any) => w.shifts).sort((a: any, b: any) => a.day.localeCompare(b.day));
-
-    allShifts.forEach((shift: any) => {
-      const row = [
-        new Date(shift.day).toLocaleDateString('fr-FR'),
-        shift.calc.vehicle,
-        shift.start,
-        shift.end,
-        shift.isLeave ? (shift.leaveType || 'Congé') : 'Mission',
-        shift.calc.effective.replace('h ', ':').replace('m', ''),
-        shift.calc.grossEarnings.toFixed(2).replace('.', ','),
-        shift.calc.netEarnings.toFixed(2).replace('.', ','),
-        shift.calc.totalAllowances.toFixed(2).replace('.', ','),
-        shift.calc.allowanceLabels.join('/')
-      ].join(';');
-      csvContent += row + "\n";
-    });
-
-    // Totals row (with some space)
-    csvContent += "\n";
-    csvContent += `TOTAL;;;;;${Math.floor(currentMonth.totalEffectiveMin / 60)}h${currentMonth.totalEffectiveMin % 60};${currentMonth.totalBrut.toFixed(2).replace('.', ',')};${currentMonth.totalNet.toFixed(2).replace('.', ',')};${currentMonth.totalAllowances.toFixed(2).replace('.', ',')};\n`;
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.style.display = 'none';
-    link.href = url;
-    link.download = `AmbuFlow_Paie_${monthName.replace(' ', '_')}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
 
   // Constantes conventionnelles
   const SMPG_BASE = 1842.40;
@@ -327,18 +387,98 @@ const PaieTab: React.FC<PaieTabProps> = ({
     DIMANCHE_FERIE: 23.90
   };
 
-  const parsedHourlyRate = parseFloat(hourlyRate) || 11.65;
+  const seniorityRate = seniorityInfo?.bonus || 0;
+  const isSeparateLine = seniorityBonusDisplayMode === 'separate_line';
+  
+  const taskBonusMap = {
+    none: 0,
+    type_1: 0.02,
+    type_2: 0.05,
+    type_3: 0.10
+  };
+  const taskBonus = taskBonusMap[supplementaryTaskType as keyof typeof taskBonusMap] || 0;
+
+  const rawBaseRate = parseFloat(baseHourlyRate || hourlyRate) || 12.79;
+
+  // Logique conventionnelle :
+  // Si "Ligne séparée" :
+  //   - taux_horaire_affiche = taux_base (+ tâche complémentaire)
+  //   - prime_ancienneté = salaire_base_effectif * %anciennete (ligne distincte)
+  // Si "Taux horaire majoré" :
+  //   - taux_horaire_affiche = taux_base * (1 + %anciennete + tâche complémentaire)
+  //   - prime_ancienneté = 0 (déjà incluse dans le taux)
+  const appliedHourlyRate = isSeparateLine
+    ? rawBaseRate * (1 + taskBonus)
+    : rawBaseRate * (1 + seniorityRate + taskBonus);
+
+  const displayedHourlyRate = appliedHourlyRate;
+
+  const handleExportCSV = () => {
+    const currentMonth = monthlyStats.months.find((m: any) => m.isCurrentMonth) || monthlyStats.months[0];
+    if (!currentMonth) return;
+
+    const monthName = currentMonth.startDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    
+    // BOM for Excel to recognize UTF-8
+    let csvContent = "\uFEFF";
+    // Header
+    csvContent += "Date;Véhicule;Début;Fin;Type;Heures Effectives;Taux Horaire;Salaire Base;Prime Ancienneté;Gain Brut;Gain Net;Indemnités;Détail Indemnités\n";
+
+    // Shifts - flattened from weeks
+    const allShifts = currentMonth.weeks.flatMap((w: any) => w.shifts).sort((a: any, b: any) => a.day.localeCompare(b.day));
+
+    allShifts.forEach((shift: any) => {
+      const row = [
+        parseLocalDate(shift.day).toLocaleDateString('fr-FR'),
+        shift.calc.vehicle,
+        shift.start,
+        shift.end,
+        shift.isLeave ? (shift.leaveType || 'Congé') : 'Mission',
+        shift.calc.effective.replace('h ', ':').replace('m', ''),
+        displayedHourlyRate.toFixed(2).replace('.', ',') + ' €',
+        shift.calc.baseEarnings.toFixed(2).replace('.', ','),
+        shift.calc.seniorityEarnings.toFixed(2).replace('.', ','),
+        shift.calc.grossEarnings.toFixed(2).replace('.', ','),
+        shift.calc.netEarnings.toFixed(2).replace('.', ','),
+        shift.calc.totalAllowances.toFixed(2).replace('.', ','),
+        shift.calc.allowanceLabels.join('/')
+      ].join(';');
+      csvContent += row + "\n";
+    });
+
+    // Totals row (with some space)
+    csvContent += "\n";
+    csvContent += `TOTAL;;;;;${Math.floor(currentMonth.totalEffectiveMin / 60)}h${currentMonth.totalEffectiveMin % 60};;${(currentMonth.totalBaseWages || 0).toFixed(2).replace('.', ',')};${(currentMonth.totalSeniorityBonus || 0).toFixed(2).replace('.', ',')};${currentMonth.totalBrut.toFixed(2).replace('.', ',')};${currentMonth.totalNet.toFixed(2).replace('.', ',')};${currentMonth.totalAllowances.toFixed(2).replace('.', ',')};\n`;
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.style.display = 'none';
+    link.href = url;
+    link.download = `AmbuFlow_Paie_${monthName.replace(' ', '_')}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const calculateShiftStats = (shift: Shift) => {
     if (shift.isFerieChome || shift.isCP || (shift.isLeave && shift.leaveType === 'CP')) {
       const effectiveMin = 420; // 7h * 60m
-      const grossEarnings = 7 * parsedHourlyRate;
+      const baseEarnings = 7 * appliedHourlyRate;
+      const seniorityEarnings = isSeparateLine ? baseEarnings * seniorityRate : 0;
+      const grossEarnings = baseEarnings + seniorityEarnings;
       const netEarnings = grossEarnings * NET_COEFFICIENT;
 
       return {
         amplitude: "00h 00m",
         effective: "07h 00m",
         effectiveMin,
+        nightMins: 0,
+        baseEarnings,
+        seniorityEarnings,
+        nightBonusAmount: 0,
+        appliedHourlyRate,
         totalAllowances: 0,
         allowanceLabels: [shift.isFerieChome ? 'FÉRIÉ CHOMÉ' : 'CONGÉ PAYÉ'],
         grossEarnings,
@@ -355,6 +495,11 @@ const PaieTab: React.FC<PaieTabProps> = ({
           amplitude: "00h 00m",
           effective: `${Math.floor(effectiveMin / 60)}h ${effectiveMin % 60}m`,
           effectiveMin,
+          nightMins: 0,
+          baseEarnings: 0,
+          seniorityEarnings: 0,
+          nightBonusAmount: 0,
+          appliedHourlyRate,
           totalAllowances: 0,
           allowanceLabels: ['SOLIDARITÉ'],
           grossEarnings: 0,
@@ -366,13 +511,20 @@ const PaieTab: React.FC<PaieTabProps> = ({
       const baseHours = weeklyContractHours || 35;
       const hoursPerDay = baseHours / (cpCalculationMode === '25' ? 5 : 6);
       const effectiveMin = Math.round(hoursPerDay * 60);
-      const grossEarnings = (effectiveMin / 60) * parsedHourlyRate;
+      const baseEarnings = (effectiveMin / 60) * appliedHourlyRate;
+      const seniorityEarnings = isSeparateLine ? baseEarnings * seniorityRate : 0;
+      const grossEarnings = baseEarnings + seniorityEarnings;
       const netEarnings = grossEarnings * NET_COEFFICIENT;
 
       return {
         amplitude: "00h 00m",
         effective: `${Math.floor(effectiveMin / 60)}h ${effectiveMin % 60}m`,
         effectiveMin,
+        nightMins: 0,
+        baseEarnings,
+        seniorityEarnings,
+        nightBonusAmount: 0,
+        appliedHourlyRate,
         totalAllowances: 0,
         allowanceLabels: [shift.leaveType || 'ABS'],
         grossEarnings,
@@ -381,7 +533,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
       };
     }
 
-    if (shift.end === '--:--') return null;
+    if (!shift.start || shift.start === '--:--' || !shift.end || shift.end === '--:--' || shift.end.trim() === '') return null;
 
     const [h1, m1] = (shift.start || "00:00").split(':').map(v => parseInt(v, 10) || 0);
     const [h2, m2] = (shift.end || "00:00").split(':').map(v => parseInt(v, 10) || 0);
@@ -425,20 +577,17 @@ const PaieTab: React.FC<PaieTabProps> = ({
     const sEnd = endMin < startMin ? endMin + 1440 : endMin;
     
     // Plage de nuit: 22h (1320) à 5h (300+1440 = 1740 ou 300)
-    // On vérifie sur deux cycles si besoin
     let nightMins = 0;
-    // Cycle 1: 00:00 - 05:00 (0 - 300)
     nightMins += calculateOverlap(sStart, sEnd, 0, 300);
-    // Cycle 1: 22:00 - 24:00 (1320 - 1440)
     nightMins += calculateOverlap(sStart, sEnd, 1320, 1440);
-    // Cycle 2: 00:00 - 05:00 (1440 - 1740)
     nightMins += calculateOverlap(sStart, sEnd, 1440, 1740);
-    // Cycle 2: 24h+22h (2760 - 2880) - unlikely but for safety
     nightMins += calculateOverlap(sStart, sEnd, 2760, 2880);
 
-    const nightBonusAmount = (nightMins / 60) * (parsedHourlyRate * 0.1);
+    const nightBonusAmount = (nightMins / 60) * (appliedHourlyRate * 0.1);
 
-    const baseGrossEarnings = (safeEffectiveMin / 60) * parsedHourlyRate + nightBonusAmount;
+    const baseEarnings = (safeEffectiveMin / 60) * appliedHourlyRate;
+    const seniorityEarnings = isSeparateLine ? baseEarnings * seniorityRate : 0;
+    const baseGrossEarnings = baseEarnings + seniorityEarnings + nightBonusAmount;
 
     // Logique des indemnités
     let totalAllowances = 0;
@@ -453,9 +602,8 @@ const PaieTab: React.FC<PaieTabProps> = ({
     }
 
     // 2. Indemnité de repas unique / Casse-croûte nuit (9.81€)
-    // Travail au moins 4h entre 22h et 07h
     let overlapNightSnack = 0;
-    overlapNightSnack += calculateOverlap(sStart, sEnd, 1320, 1860); // 22h - 7h (07:00 is 1440+420=1860? No, 7*60=420. 1440+420=1860)
+    overlapNightSnack += calculateOverlap(sStart, sEnd, 1320, 1860);
     if (overlapNightSnack >= 240) {
       totalAllowances += ALLOWANCES.REPAS_UNIQUE;
       allowanceLabels.push("Nuit (9.81€)");
@@ -481,6 +629,10 @@ const PaieTab: React.FC<PaieTabProps> = ({
       effective: `${Math.floor(safeEffectiveMin / 60)}h ${safeEffectiveMin % 60}m`,
       effectiveMin: safeEffectiveMin,
       nightMins,
+      baseEarnings,
+      seniorityEarnings,
+      nightBonusAmount,
+      appliedHourlyRate,
       totalAllowances,
       allowanceLabels,
       grossEarnings,
@@ -526,6 +678,9 @@ const PaieTab: React.FC<PaieTabProps> = ({
             startDate: new Date(date.getFullYear(), date.getMonth(), 1),
             totalNet: 0,
             totalBrut: 0,
+            totalBaseWages: 0,
+            totalSeniorityBonus: 0,
+            totalNightBonus: 0,
             totalEffectiveMin: 0,
             totalAllowances: 0,
             weeksMap: {},
@@ -536,6 +691,9 @@ const PaieTab: React.FC<PaieTabProps> = ({
         const month = monthsMap[monthKey];
         month.totalNet += s.calc.netEarnings;
         month.totalBrut += s.calc.grossEarnings;
+        month.totalBaseWages += s.calc.baseEarnings;
+        month.totalSeniorityBonus += s.calc.seniorityEarnings;
+        month.totalNightBonus += s.calc.nightBonusAmount || 0;
         month.totalEffectiveMin += s.calc.effectiveMin;
         month.totalAllowances += s.calc.totalAllowances;
 
@@ -549,6 +707,9 @@ const PaieTab: React.FC<PaieTabProps> = ({
             startDate: startOfWeek,
             totalNet: 0,
             totalBrut: 0,
+            totalBaseWages: 0,
+            totalSeniorityBonus: 0,
+            totalNightBonus: 0,
             totalEffectiveMin: 0,
             totalAllowances: 0,
             shifts: []
@@ -558,6 +719,9 @@ const PaieTab: React.FC<PaieTabProps> = ({
         const week = month.weeksMap[weekKey];
         week.totalNet += s.calc.netEarnings;
         week.totalBrut += s.calc.grossEarnings;
+        week.totalBaseWages += s.calc.baseEarnings;
+        week.totalSeniorityBonus += s.calc.seniorityEarnings;
+        week.totalNightBonus += s.calc.nightBonusAmount || 0;
         week.totalEffectiveMin += s.calc.effectiveMin;
         week.totalAllowances += s.calc.totalAllowances;
         week.shifts.push(s);
@@ -567,10 +731,9 @@ const PaieTab: React.FC<PaieTabProps> = ({
     const sortedMonths = Object.values(monthsMap).sort((a: any, b: any) => b.monthKey.localeCompare(a.monthKey));
 
     // Calcul des tendances mensuelles
-    sortedMonths.forEach((month: any, index: number) => {
+    sortedMonths.forEach((month: any) => {
       month.weeks = Object.values(month.weeksMap).sort((a: any, b: any) => b.weekKey.localeCompare(a.weekKey));
       
-      // Comparaison avec le mois précédent chronologique dans les données
       const prevMonthKey = (() => {
         const d = new Date(month.startDate);
         d.setMonth(d.getMonth() - 1);
@@ -599,6 +762,9 @@ const PaieTab: React.FC<PaieTabProps> = ({
     return {
       totalMonthlyBrut: currentMonthBrut + taxiBonusBrut,
       totalMonthlyNet: (currentMonthData?.totalNet || 0) + taxiBonusNet,
+      currentMonthBaseWages: currentMonthData?.totalBaseWages || 0,
+      currentMonthSeniorityBonus: currentMonthData?.totalSeniorityBonus || 0,
+      currentMonthNightBonus: currentMonthData?.totalNightBonus || 0,
       prevMonthlyBrut: (prevMonthData?.totalBrut || 0) + taxiBonusBrut,
       prevMonthlyNet: (prevMonthData?.totalNet || 0) + taxiBonusNet,
       totalEffectiveMin: currentMonthData?.totalEffectiveMin || 0,
@@ -607,7 +773,7 @@ const PaieTab: React.FC<PaieTabProps> = ({
       isPositiveTrendBrut,
       months: sortedMonths
     };
-  }, [shifts, hasTaxiCard, parsedHourlyRate, weeklyContractHours, overtimeMode, payRateMode, cpCalculationMode]);
+  }, [shifts, hasTaxiCard, appliedHourlyRate, seniorityRate, isSeparateLine, weeklyContractHours, overtimeMode, payRateMode, cpCalculationMode]);
 
   const cardClass = `p-6 rounded-[32px] border transition-all duration-300 backdrop-blur-xl ${
     darkMode ? 'bg-slate-900/60 border-white/5 shadow-2xl' : 'bg-white/60 border-white/40 shadow-xl'
@@ -698,19 +864,39 @@ const PaieTab: React.FC<PaieTabProps> = ({
             </div>
           </div>
           
-          <div className="flex gap-4 mt-6">
+          <div className="flex gap-4 mt-6 flex-wrap">
             <div className="flex flex-col">
               <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Heures</span>
               <span className="text-lg font-black">{Math.floor(monthlyStats.totalEffectiveMin / 60)}h {Math.round(monthlyStats.totalEffectiveMin % 60)}m</span>
             </div>
-            <div className="w-px h-8 bg-white/10 self-center" />
+            <div className="w-px h-8 bg-white/10 self-center hidden sm:block" />
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase tracking-widest opacity-50">
+                Salaire Base ({displayedHourlyRate.toFixed(2)}€/h)
+              </span>
+              <span className="text-lg font-black">
+                {((displayMode === 'net' ? (monthlyStats.currentMonthBaseWages || 0) * NET_COEFFICIENT : (monthlyStats.currentMonthBaseWages || 0))).toFixed(0)} €
+              </span>
+            </div>
+            <div className="w-px h-8 bg-white/10 self-center hidden sm:block" />
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase tracking-widest opacity-50">
+                {isSeparateLine ? `Prime Anc. (+${(seniorityRate * 100).toFixed(0)}%)` : "Prime Anc."}
+              </span>
+              <span className="text-lg font-black text-amber-300">
+                {isSeparateLine 
+                  ? `+${((displayMode === 'net' ? (monthlyStats.currentMonthSeniorityBonus || 0) * NET_COEFFICIENT : (monthlyStats.currentMonthSeniorityBonus || 0))).toFixed(0)} €`
+                  : "0 € (incluse)"}
+              </span>
+            </div>
+            <div className="w-px h-8 bg-white/10 self-center hidden sm:block" />
             <div className="flex flex-col">
               <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Indemnités</span>
               <span className="text-lg font-black">{monthlyStats.totalAllowances.toFixed(2)} €</span>
             </div>
             {displayMode === 'net' && (
               <>
-                <div className="w-px h-8 bg-white/10 self-center" />
+                <div className="w-px h-8 bg-white/10 self-center hidden sm:block" />
                 <div className="flex flex-col">
                   <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Charges (22%)</span>
                   <span className="text-lg font-black italic">-{ (monthlyStats.totalMonthlyBrut - monthlyStats.totalMonthlyNet).toFixed(0) }€</span>
@@ -755,6 +941,13 @@ const PaieTab: React.FC<PaieTabProps> = ({
                 darkMode={darkMode} 
                 cardClass={cardClass}
                 isDefaultOpen={month.isCurrentMonth}
+                seniorityBonusDisplayMode={seniorityBonusDisplayMode}
+                seniorityRate={seniorityRate}
+                displayedHourlyRate={displayedHourlyRate}
+                hasTaxiCard={hasTaxiCard}
+                SMPG_BASE={SMPG_BASE}
+                TAXI_BONUS_PERCENT={TAXI_BONUS_PERCENT}
+                NET_COEFFICIENT={NET_COEFFICIENT}
               />
             ))}
           </div>

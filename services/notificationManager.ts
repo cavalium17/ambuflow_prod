@@ -6,60 +6,106 @@ export const requestNotificationPermissions = async () => {
     return false;
   }
 
-  const permission = await Notification.requestPermission();
-  console.log("Permission notification:", permission);
-  return permission === "granted";
-};
-
-export const requestLocationPermissions = async (): Promise<{latitude: number, longitude: number} | null> => {
-  console.log("Demande de permissions GPS (Toujours/Background)...");
-  if (!navigator.geolocation) {
-    console.log("Géolocalisation non supportée");
-    return null;
+  try {
+    const permission = await Notification.requestPermission();
+    console.log("Permission notification:", permission);
+    return permission === "granted";
+  } catch (err) {
+    console.warn("Erreur demande permission notification:", err);
+    return false;
   }
-
-  return new Promise((resolve) => {
-    console.log("Tentative GPS 1: Haute Précision activée (Timeout 5s)...");
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        console.log("Position récupérée (Haute Précision) :", [pos.coords.latitude, pos.coords.longitude]);
-        resolve({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude
-        });
-      },
-      (err) => {
-        console.warn("Échec Tentative GPS 1 (Haute Précision):", err.message, "Code:", err.code);
-        console.log("Lancement de la Tentative GPS 2 de repli (Basse Précision/Réseau/Wi-Fi)...");
-        
-        navigator.geolocation.getCurrentPosition(
-          (fallbackPos) => {
-            console.log("Position récupérée après repli (Basse Précision) :", [fallbackPos.coords.latitude, fallbackPos.coords.longitude]);
-            resolve({
-              latitude: fallbackPos.coords.latitude,
-              longitude: fallbackPos.coords.longitude
-            });
-          },
-          (fallbackErr) => {
-            if (fallbackErr.code === 1 || fallbackErr.message.includes('permission') || fallbackErr.message.includes('policy')) {
-              console.warn("L'accès au GPS est désactivé par l'utilisateur ou la politique de sécurité de l'iframe.");
-            } else {
-              console.warn("Impossible de récupérer la position GPS (les deux précisions ont échoué) :", fallbackErr.message);
-            }
-            // On signale gentiment et on alerte via un log visible
-            console.warn(`[GPS] Signal GPS non disponible. Détails - Tentative 1: ${err.message} | Repli: ${fallbackErr.message}`);
-            resolve(null);
-          },
-          { enableHighAccuracy: false, timeout: 10000 }
-        );
-      },
-      { enableHighAccuracy: true, timeout: 5000 }
-    );
-  });
 };
 
 // Simulation d'un canal Android pour le web (via console log pour le debug)
 export const setupNotificationChannels = () => {
   console.log("Création du canal de notification 'Repas' (Importance: HIGH)");
-  // Sur Android natif, on utiliserait PushNotification.createChannel
+};
+
+/**
+ * Joue une sonnerie / carillon agréable via l'API Web Audio (100% autonome, fonctionne hors ligne)
+ */
+export const playBreakEndAlarm = () => {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    const now = ctx.currentTime;
+    // Carillon 3 tons ascendants (Do5, Mi5, Sol5)
+    const notes = [523.25, 659.25, 783.99];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.18);
+      gain.gain.setValueAtTime(0, now + idx * 0.18);
+      gain.gain.linearRampToValueAtTime(0.35, now + idx * 0.18 + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.18 + 0.35);
+      
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.18);
+      osc.stop(now + idx * 0.18 + 0.36);
+    });
+  } catch (e) {
+    console.debug("Impossible d'émettre le carillon audio:", e);
+  }
+};
+
+/**
+ * Déclenche une vibration sur le téléphone
+ */
+export const triggerBreakVibration = () => {
+  try {
+    if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate([400, 200, 400, 200, 600]);
+    }
+  } catch (e) {
+    console.debug("Vibration non supportée:", e);
+  }
+};
+
+/**
+ * Envoie la planification de fin de pause au Service Worker pour notification en arrière-plan
+ */
+export const scheduleServiceWorkerBreakNotification = (title: string, body: string, endTimeMs: number) => {
+  try {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((reg) => {
+          reg.active?.postMessage({
+            type: 'SCHEDULE_BREAK_NOTIFICATION',
+            title,
+            body,
+            endTime: endTimeMs,
+            delay: Math.max(0, endTimeMs - Date.now())
+          });
+        });
+      }).catch((e) => console.debug("Erreur planification SW:", e));
+    }
+  } catch (e) {
+    console.debug("Erreur scheduleServiceWorkerBreakNotification:", e);
+  }
+};
+
+/**
+ * Annule la notification de pause en attente dans le Service Worker
+ */
+export const cancelServiceWorkerBreakNotification = () => {
+  try {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((reg) => {
+          reg.active?.postMessage({
+            type: 'CANCEL_BREAK_NOTIFICATION'
+          });
+        });
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.debug("Erreur cancelServiceWorkerBreakNotification:", e);
+  }
 };
