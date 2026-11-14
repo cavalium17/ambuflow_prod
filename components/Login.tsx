@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Mail, 
@@ -19,6 +19,8 @@ import {
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider
 } from 'firebase/auth';
 import { setGmailSessionToken } from '../src/services/gmailService';
@@ -43,6 +45,48 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
   const [error, setError] = useState<string | React.ReactNode | null>(null);
   const [resetSent, setResetSent] = useState(false);
   const [showUserNotFoundModal, setShowUserNotFoundModal] = useState(false);
+
+  // Gestion du retour après une redirection Google sur mobile
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then(async (result) => {
+        if (result) {
+          const credential = GoogleAuthProvider.credentialFromResult(result);
+          if (credential?.accessToken && result.user.email) {
+            setGmailSessionToken(credential.accessToken, result.user.email);
+          }
+          const user = result.user;
+          const userDocRef = doc(db, 'users', user.uid);
+          
+          let userDoc;
+          try {
+            userDoc = await getDoc(userDocRef);
+          } catch (error) {
+            handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+          }
+          
+          if (userDoc && !userDoc.exists()) {
+            try {
+              await setDoc(userDocRef, {
+                email: user.email,
+                userName: user.displayName || '',
+                profileImage: user.photoURL || '',
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+                onboarded: true
+              }, { merge: true });
+            } catch (error) {
+              handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+            }
+          }
+          if (onLoginSuccess) onLoginSuccess();
+        }
+      })
+      .catch((err) => {
+        console.error("Erreur redirect Google:", err);
+        setError("Erreur lors de la connexion Google.");
+      });
+  }, [onLoginSuccess]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,9 +134,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
       if (!commonUserErrors.includes(err.code)) {
         console.error("Auth error detail:", err);
       }
-      
-      // Log extra details for debugging "Identifiants incorrects" issues
-      console.log(`[Auth Debug] Email: "${email.trim().toLowerCase()}" | Error Code: ${err.code}`);
       
       let message = err.message || "Une erreur est survenue.";
       
@@ -158,7 +199,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
       } else if (err.code === 'auth/operation-not-allowed') {
         setError("La connexion par email/mot de passe n'est pas activée dans Firebase.");
       } else {
-        // Fallback with user-friendly mapping if possible or just the message
         setError(message);
       }
     } finally {
@@ -169,37 +209,45 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
   const handleGoogleLogin = async () => {
     setLoading(true);
     setError(null);
+    try {
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      
+      if (isMobile) {
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
+
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGmailSessionToken(credential.accessToken, result.user.email);
+      }
+      const user = result.user;
+      const userDocRef = doc(db, 'users', user.uid);
+      
+      let userDoc;
       try {
-        const result = await signInWithPopup(auth, googleProvider);
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (credential?.accessToken) {
-          setGmailSessionToken(credential.accessToken, result.user.email);
-        }
-        const user = result.user;
-        const userDocRef = doc(db, 'users', user.uid);
-        
-        let userDoc;
+        userDoc = await getDoc(userDocRef);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+      }
+      
+      if (userDoc && !userDoc.exists()) {
         try {
-          userDoc = await getDoc(userDocRef);
+          await setDoc(userDocRef, {
+            email: user.email,
+            userName: user.displayName || '',
+            profileImage: user.photoURL || '',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            onboarded: true
+          }, { merge: true });
         } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+          handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
         }
-        
-        if (userDoc && !userDoc.exists()) {
-          try {
-            await setDoc(userDocRef, {
-              email: user.email,
-              userName: user.displayName || '',
-              profileImage: user.photoURL || '',
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-              onboarded: true
-            }, { merge: true });
-          } catch (error) {
-            handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
-          }
-        }
-      } catch (err: any) {
+      }
+      if (onLoginSuccess) onLoginSuccess();
+    } catch (err: any) {
       console.error("Google Auth Error:", err);
       if (err.code === 'auth/account-exists-with-different-credential') {
         setError("Un compte existe déjà via une autre méthode (email/mot de passe).");
@@ -213,25 +261,10 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
             <p className="text-[10px] opacity-70 leading-relaxed">
               Le domaine <code className="bg-rose-100 px-1 rounded text-rose-700 font-mono">{hostname}</code> n'est pas autorisé dans votre projet Firebase.
             </p>
-            <div className="p-2 bg-white/50 rounded-lg border border-rose-200 mt-2">
-              <p className="text-[9px] font-bold text-slate-500 mb-1">Action requise :</p>
-              <ol className="text-[9px] text-slate-600 space-y-1 ml-3 list-decimal">
-                <li>Allez dans la <a href={`https://console.firebase.google.com/project/${finalConfig.projectId}/authentication/settings`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline">Console Firebase</a></li>
-                <li>Onglet "Domaines autorisés"</li>
-                <li>Ajoutez <span className="font-mono bg-slate-100 px-1">{hostname}</span></li>
-              </ol>
-            </div>
           </div>
         );
       } else if (err.code === 'auth/operation-not-allowed') {
         setError("La connexion Google n'est pas activée dans votre projet Firebase.");
-      } else if (err.code && err.code.includes('api-key-not-valid')) {
-        setError(
-          <div className="space-y-1">
-            <p>Clé API non valide.</p>
-            <p className="text-[8px] opacity-70">L'authentification Google n'est peut-être pas activée ou la clé API restreinte bloque l'accès.</p>
-          </div>
-        );
       } else if (err.code !== 'auth/popup-closed-by-user') {
         setError(`Erreur Google (${err.code}): ${err.message || "Erreur inconnue"}`);
       }
@@ -259,7 +292,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
 
   return (
     <div className="fixed inset-0 z-[100] bg-slate-50 overflow-y-auto selection:bg-indigo-100">
-      {/* Dynamic Background */}
       <div className="fixed inset-0 z-0">
         <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-slate-100 to-slate-50" />
         <div className="absolute top-[20%] left-[10%] w-[40%] h-[40%] bg-indigo-50/50 blur-[120px] rounded-full animate-pulse" />
@@ -309,7 +341,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
 
       <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-6">
         <div className="w-full max-w-sm space-y-8">
-          {/* Brand */}
           <motion.div 
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -328,7 +359,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
             transition={{ delay: 0.2 }}
             className="bg-white rounded-[40px] p-8 shadow-xl shadow-slate-200/50 border border-white relative overflow-hidden"
           >
-            {/* Tabs */}
             <div className="flex bg-slate-50 p-1 rounded-2xl mb-8">
               <button 
                 type="button"
@@ -436,7 +466,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, onEnterAsGuest }) => {
             </form>
           </motion.div>
 
-          {/* Guest */}
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
